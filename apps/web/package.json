@@ -1,0 +1,9 @@
+{
+  "name": "@archon/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node -e \"console.log('apps/web placeholder — Next.js added in Phase 7')\""
+  }
+}

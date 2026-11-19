@@ -1,0 +1,15 @@
+{
+  "name": "@archon/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean"
+  },
+  "dependencies": {
+    "@archon/core": "*",
+    "@archon/shared": "*"
+  }
+}

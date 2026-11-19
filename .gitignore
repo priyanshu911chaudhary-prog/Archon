@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build & TypeScript outputs
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# Environment files (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# Testing & coverage
+coverage/
+playwright-report/
+test-results/
+
+# Logs & runtime temp files
+logs/
+*.log
+npm-debug.log*
+tmp/
+.tmp/
+
+# OS & editor clutter
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
