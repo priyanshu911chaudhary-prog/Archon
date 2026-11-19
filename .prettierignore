@@ -1,0 +1,8 @@
+dist/
+node_modules/
+coverage/
+.next/
+.vitest/
+package-lock.json
+*.tsbuildinfo
+.husky/_/

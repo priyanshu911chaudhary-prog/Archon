@@ -6,8 +6,5 @@
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },
   "include": ["src"],
-  "references": [
-    { "path": "../../packages/shared" },
-    { "path": "../../packages/core" }
-  ]
+  "references": [{ "path": "../../packages/shared" }, { "path": "../../packages/core" }]
 }

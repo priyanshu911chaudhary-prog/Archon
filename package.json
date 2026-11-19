@@ -12,13 +12,16 @@
     "packages/*"
   ],
   "scripts": {
-    "lint": "eslint .",
+    "prepare": "husky",
+    "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc -b",
     "build": "tsc -b",
     "clean": "tsc -b --clean",
-    "test": "vitest run"
+    "test": "vitest run",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down"
   },
   "devDependencies": {
     "@commitlint/cli": "^21.2.4",

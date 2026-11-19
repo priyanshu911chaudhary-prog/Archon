@@ -15,6 +15,7 @@ out/
 
 # Testing & coverage
 coverage/
+.vitest/
 playwright-report/
 test-results/
 

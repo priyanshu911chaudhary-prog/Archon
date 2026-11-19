@@ -24,3 +24,4 @@ Archon strictly separates **deterministic structural truth** (AST-extracted `IMP
 npm install
 npm run typecheck
 npm test
+```
