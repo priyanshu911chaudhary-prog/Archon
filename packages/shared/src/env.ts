@@ -90,8 +90,37 @@ const redisUrlSchema = z.preprocess(
     }),
 );
 
+const webOriginSchema = z.preprocess(
+  emptyToUndefined,
+  z
+    .url({ error: 'Must be a valid http:// or https:// origin (e.g. http://localhost:3000)' })
+    .refine(
+      (raw) => {
+        if (raw.endsWith('/') || raw.includes('?') || raw.includes('#')) {
+          return false;
+        }
+        try {
+          const parsed = new URL(raw);
+          const isHttp = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+          return (
+            isHttp && parsed.pathname === '/' && parsed.username === '' && parsed.password === ''
+          );
+        } catch {
+          return false;
+        }
+      },
+      {
+        error:
+          'Must be a clean http:// or https:// origin with no path, query, hash, credentials, or trailing slash',
+      },
+    )
+    .optional(),
+);
+
 const logLevelValues = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
 export type LogLevel = (typeof logLevelValues)[number];
+
+export const DEFAULT_DEV_WEB_ORIGIN = 'http://localhost:3000' as const;
 
 export const envSchema = z
   .object({
@@ -105,6 +134,9 @@ export const envSchema = z
     REDIS_URL: redisUrlSchema,
     GITHUB_TOKEN: optionalNonEmptyString,
     GEMINI_API_KEY: optionalNonEmptyString,
+    WEB_ORIGIN: webOriginSchema,
+    INGEST_RATE_LIMIT_PER_HOUR: intFromEnv(1, 1000, 5),
+    TRUST_PROXY_HOPS: intFromEnv(0, 5, 1),
     MAX_SUPPORTED_FILES: intFromEnv(1, 10000, 500),
     MAX_REPO_SIZE_MB: intFromEnv(1, 1000, 50),
     HUB_THRESHOLD: intFromEnv(1, 10000, 30),
@@ -118,7 +150,18 @@ export const envSchema = z
         message: 'Required when NODE_ENV is not "test"',
       });
     }
-  });
+    if (data.NODE_ENV === 'production' && !data.WEB_ORIGIN) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['WEB_ORIGIN'],
+        message: 'Required when NODE_ENV is "production"',
+      });
+    }
+  })
+  .transform((data) => ({
+    ...data,
+    WEB_ORIGIN: data.WEB_ORIGIN ?? DEFAULT_DEV_WEB_ORIGIN,
+  }));
 
 export type AppEnv = Readonly<z.infer<typeof envSchema>>;
 
