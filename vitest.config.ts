@@ -4,6 +4,12 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['packages/**/src/**/*.test.ts', 'apps/**/src/**/*.test.ts'],
-    exclude: ['**/dist/**', '**/node_modules/**', '**/.next/**', '**/coverage/**'],
+    exclude: [
+      '**/dist/**',
+      '**/node_modules/**',
+      '**/.next/**',
+      '**/coverage/**',
+      '**/*.integration.test.ts',
+    ],
   },
 });
