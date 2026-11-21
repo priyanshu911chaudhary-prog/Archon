@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@archon/core": "*",
-    "@archon/shared": "*"
+    "@archon/shared": "*",
+    "tar": "^7.5.23"
   }
 }
