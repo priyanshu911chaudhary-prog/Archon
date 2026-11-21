@@ -6,3 +6,4 @@ coverage/
 package-lock.json
 *.tsbuildinfo
 .husky/_/
+packages/db/drizzle/

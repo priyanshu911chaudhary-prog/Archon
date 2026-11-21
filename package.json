@@ -20,6 +20,9 @@
     "build": "tsc -b",
     "clean": "tsc -b --clean",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "db:generate": "npm -w @archon/db run db:generate",
+    "db:migrate": "npm -w @archon/db run db:migrate",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down"
   },

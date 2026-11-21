@@ -10,6 +10,7 @@ export default defineConfig([
     '**/coverage/**',
     '**/.next/**',
     '**/.vitest/**',
+    'packages/db/drizzle/**',
   ]),
 
   {
@@ -19,14 +20,15 @@ export default defineConfig([
   },
 
   {
-    name: 'archon/root-ts-configs',
-    files: ['*.config.{ts,mts,cts}'],
+    name: 'archon/ts-configs',
+    files: ['**/*.config.{ts,mts,cts}'],
     extends: [js.configs.recommended, tseslint.configs.recommended],
   },
 
   {
     name: 'archon/workspace-ts-strict',
     files: ['apps/**/*.{ts,tsx}', 'packages/**/*.{ts,tsx}'],
+    ignores: ['**/*.config.{ts,mts,cts}'],
     extends: [
       js.configs.recommended,
       tseslint.configs.strictTypeChecked,
