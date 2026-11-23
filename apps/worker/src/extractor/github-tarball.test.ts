@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TarballExtractionError } from './errors.js';
 import { withExtractedRepo, type ExtractGitHubTarballOptions } from './github-tarball.js';
 import { buildGzippedUstar, type UstarFixtureEntry } from './tar-test-utils.js';
+import { gzipSync } from 'node:zlib';
 
 type FetchInput = Parameters<typeof globalThis.fetch>[0];
 
@@ -196,6 +197,45 @@ describe('withExtractedRepo (safe GitHub tarball extractor)', () => {
 
     // Unconditional cleanup verified via injectable tempBaseDir
     expect(existsSync(capturedRootDir)).toBe(false);
+    expect(await readdir(tempBaseDir)).toEqual([]);
+  });
+
+  it('marks truncated gzip downloads as retryable TARBALL_PARSE_ERROR and corrupt/empty tar archives as non-retryable', async () => {
+    // 1. Truncated gzipped archive -> gunzip fails mid-stream -> retryable: true
+    const validArchive = buildGzippedUstar([
+      { path: `${PREFIX}/src/a.ts`, content: 'export const value = "hello world";\n'.repeat(20) },
+    ]);
+    const truncatedArchive = validArchive.subarray(0, Math.floor(validArchive.length / 2));
+
+    const truncatedErr = await expectTarballError(
+      withExtractedRepo(baseOptions(createTarballMockFetch(truncatedArchive)), () =>
+        Promise.resolve(),
+      ),
+      'TARBALL_PARSE_ERROR',
+    );
+    expect(truncatedErr.retryable).toBe(true);
+    expect(await readdir(tempBaseDir)).toEqual([]);
+
+    // 2. Valid gzip wrapping corrupt tar header bytes -> tar Parser fails -> retryable: false
+    const corruptTarHeader = gzipSync(Buffer.alloc(1024, 0x41));
+    const corruptErr = await expectTarballError(
+      withExtractedRepo(baseOptions(createTarballMockFetch(corruptTarHeader)), () =>
+        Promise.resolve(),
+      ),
+      'TARBALL_PARSE_ERROR',
+    );
+    expect(corruptErr.retryable).toBe(false);
+    expect(await readdir(tempBaseDir)).toEqual([]);
+
+    // 3. Valid gzip wrapping empty tar archive (EOF zero blocks only) -> retryable: false
+    const emptyTarArchive = gzipSync(Buffer.alloc(1024, 0));
+    const emptyErr = await expectTarballError(
+      withExtractedRepo(baseOptions(createTarballMockFetch(emptyTarArchive)), () =>
+        Promise.resolve(),
+      ),
+      'TARBALL_PARSE_ERROR',
+    );
+    expect(emptyErr.retryable).toBe(false);
     expect(await readdir(tempBaseDir)).toEqual([]);
   });
 
