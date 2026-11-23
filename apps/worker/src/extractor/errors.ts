@@ -11,6 +11,7 @@ export type TarballExtractionErrorCode =
 export interface TarballExtractionErrorOptions {
   readonly code: TarballExtractionErrorCode;
   readonly message: string;
+  readonly retryable?: boolean;
   readonly retryAfterSec?: number;
   readonly details?: Record<string, unknown>;
   readonly cause?: unknown;
@@ -18,6 +19,7 @@ export interface TarballExtractionErrorOptions {
 
 export class TarballExtractionError extends Error {
   readonly code: TarballExtractionErrorCode;
+  readonly retryable: boolean;
   readonly retryAfterSec?: number;
   readonly details?: Record<string, unknown>;
 
@@ -25,6 +27,7 @@ export class TarballExtractionError extends Error {
     super(options.message, options.cause !== undefined ? { cause: options.cause } : undefined);
     this.name = 'TarballExtractionError';
     this.code = options.code;
+    this.retryable = options.retryable ?? false;
     this.retryAfterSec = options.retryAfterSec;
     this.details = options.details;
   }

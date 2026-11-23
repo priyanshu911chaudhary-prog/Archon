@@ -361,6 +361,7 @@ async function writeEntryToDisk(
       fail(
         new TarballExtractionError({
           code: 'TARBALL_PARSE_ERROR',
+          retryable: true,
           message: `Failed writing extracted file ${path.basename(destinationPath)}.`,
           cause: err,
         }),
@@ -380,6 +381,7 @@ async function writeEntryToDisk(
           ? err
           : new TarballExtractionError({
               code: 'TARBALL_PARSE_ERROR',
+              retryable: true,
               message: 'Error reading tar entry stream.',
               cause: err,
             }),
@@ -488,6 +490,7 @@ async function extractTarballStreamIntoDir(
       triggerFatal(
         new TarballExtractionError({
           code: 'TARBALL_PARSE_ERROR',
+          retryable: true,
           message: `Tar warning (${code}): ${message}`,
         }),
         parser,
@@ -689,6 +692,7 @@ async function extractTarballStreamIntoDir(
               ? err
               : new TarballExtractionError({
                   code: 'TARBALL_PARSE_ERROR',
+                  retryable: true,
                   message: `Failed writing entry ${relPosix}.`,
                   cause: err,
                 });
@@ -704,7 +708,17 @@ async function extractTarballStreamIntoDir(
       resolve();
     });
     parser.once('error', (err: unknown) => {
-      reject(err instanceof Error ? err : new Error(String(err)));
+      const typedErr =
+        err instanceof TarballExtractionError
+          ? err
+          : new TarballExtractionError({
+              code: 'TARBALL_PARSE_ERROR',
+              retryable: false,
+              message: 'Corrupt or invalid tar archive header.',
+              cause: err,
+            });
+      state.fatal ??= typedErr;
+      reject(typedErr);
     });
   });
 
@@ -774,6 +788,7 @@ async function extractTarballStreamIntoDir(
     }
     throw new TarballExtractionError({
       code: 'TARBALL_PARSE_ERROR',
+      retryable: true,
       message: 'Failed to decompress or parse repository tarball.',
       cause: err,
     });
@@ -789,6 +804,7 @@ async function extractTarballStreamIntoDir(
   if (finalPrefix === null) {
     throw new TarballExtractionError({
       code: 'TARBALL_PARSE_ERROR',
+      retryable: false,
       message: 'Tar archive was empty or missing a top-level folder.',
     });
   }

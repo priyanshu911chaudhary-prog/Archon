@@ -4,13 +4,25 @@
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "tsc -b",
-    "clean": "tsc -b --clean"
+    "clean": "tsc -b --clean",
+    "dev": "tsx watch src/worker.ts",
+    "start": "node dist/worker.js"
   },
   "dependencies": {
     "@archon/core": "*",
+    "@archon/db": "*",
     "@archon/shared": "*",
+    "bullmq": "^6.7.8",
+    "ioredis": "^6.0.0",
     "tar": "^7.5.23"
   }
 }
