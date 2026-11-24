@@ -6,6 +6,13 @@ const FAST_FAIL_MAX_RETRIES_PER_REQUEST = 2;
 const FAST_FAIL_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_REDIS_CLOSE_TIMEOUT_MS = 3_000;
 
+export const FAST_FAIL_RECONNECT_BASE_MS = 500;
+export const FAST_FAIL_RECONNECT_MAX_MS = 10_000;
+
+export function computeFastFailRetryDelay(times: number): number {
+  return Math.min(times * FAST_FAIL_RECONNECT_BASE_MS, FAST_FAIL_RECONNECT_MAX_MS);
+}
+
 export class RedisConfigError extends Error {
   readonly code = 'REDIS_CONFIG_ERROR' as const;
 
@@ -134,6 +141,12 @@ export interface CreateFastFailRedisClientOptions {
   readonly redisUrl: string;
   readonly logger?: Pick<Logger, 'warn'>;
   readonly lazyConnect?: boolean;
+  /**
+   * When true, uses capped exponential backoff (`Math.min(times * 500, 10_000)`) so long-lived
+   * API servers recover after idle disconnects while still keeping `enableOfflineQueue: false`
+   * and `maxRetriesPerRequest: 2`. Defaults to false (`retryStrategy: () => null`).
+   */
+  readonly reconnect?: boolean;
 }
 
 /**
@@ -154,7 +167,7 @@ export function createFastFailRedisClient(options: CreateFastFailRedisClientOpti
     connectTimeout: FAST_FAIL_CONNECT_TIMEOUT_MS,
     enableOfflineQueue: false,
     lazyConnect: options.lazyConnect ?? false,
-    retryStrategy: () => null,
+    retryStrategy: options.reconnect === true ? computeFastFailRetryDelay : () => null,
   };
 
   const client = new Redis(redisOptions);

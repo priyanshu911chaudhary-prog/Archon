@@ -33,6 +33,9 @@ import {
   type IngestionJobPayload,
 } from './queue/enqueuer.js';
 
+import { createRedisRateLimitStoreConfig, type RateLimitStoreConfig } from './rate-limit.js';
+import { createRedisRateLimitStore } from './redis-rate-limit-store.js';
+
 const ZUSTAND_SHA = '9fed2eb2f3af672da9f7bf694b996df3831fc207';
 const SAMPLE_TREE_SHA = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
@@ -398,6 +401,8 @@ describe('Archon Fastify API (app.inject route tests)', () => {
       envOverrides?: Record<string, string | undefined>;
       repository?: InMemoryIngestionRepository;
       checkDbHealth?: () => Promise<boolean>;
+      checkRedisHealth?: () => Promise<boolean>;
+      rateLimitStore?: RateLimitStoreConfig;
       githubPrecheck?: Pick<GitHubPrecheckClient, 'precheckRepository'>;
       enqueuer?: IngestionJobEnqueuer;
       now?: () => Date;
@@ -420,6 +425,8 @@ describe('Archon Fastify API (app.inject route tests)', () => {
       repository,
       checkDbHealth: overrides.checkDbHealth ?? (() => Promise.resolve(true)),
       githubPrecheck: overrides.githubPrecheck ?? makeFakePrecheck(),
+      checkRedisHealth: overrides.checkRedisHealth,
+      rateLimitStore: overrides.rateLimitStore,
       enqueuer: spyEnqueuer,
       now: overrides.now,
     });
@@ -828,5 +835,81 @@ describe('Archon Fastify API (app.inject route tests)', () => {
       payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
     });
     expect(r3.statusCode).toBe(202);
+  });
+
+  it('GET /api/v1/health reports redis ok (200) and degraded (503) when checkRedisHealth is provided', async () => {
+    const { app: healthyApp } = await createTestApp({
+      checkRedisHealth: () => Promise.resolve(true),
+    });
+    const okRes = await healthyApp.inject({ method: 'GET', url: '/api/v1/health' });
+    expect(okRes.statusCode).toBe(200);
+    const okBody = parseJsonBody(okRes.body, healthBodySchema);
+    expect(okBody.status).toBe('ok');
+    expect(okBody.db).toBe('ok');
+    expect(okBody.redis).toBe('ok');
+
+    const { app: degradedApp } = await createTestApp({
+      checkRedisHealth: () => Promise.resolve(false),
+    });
+    const badRes = await degradedApp.inject({ method: 'GET', url: '/api/v1/health' });
+    expect(badRes.statusCode).toBe(503);
+    const badBody = parseJsonBody(badRes.body, healthBodySchema);
+    expect(badBody.status).toBe('degraded');
+    expect(badBody.db).toBe('ok');
+    expect(badBody.redis).toBe('error');
+  });
+
+  it('POST /api/v1/repos returns 503 QUEUE_UNAVAILABLE and marks the DB row failed when enqueueing fails', async () => {
+    const repository = new InMemoryIngestionRepository();
+    const { app } = await createTestApp({
+      repository,
+      enqueuer: {
+        enqueue: () => Promise.reject(new Error('Redis connection timed out')),
+      },
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(parseJsonBody(res.body, errorEnvelopeSchema).error.code).toBe('QUEUE_UNAVAILABLE');
+
+    const repos = [...repository.repos.values()];
+    expect(repos).toHaveLength(1);
+    expect(repos[0]?.status).toBe('failed');
+    expect(repos[0]?.errorCode).toBe('QUEUE_ENQUEUE_FAILED');
+  });
+
+  it('fails open with a logged warning (skipOnError: true) when Redis rate-limit store is not ready', async () => {
+    const warnings: string[] = [];
+    const storeCtor = createRedisRateLimitStore({
+      client: {
+        status: 'reconnecting',
+        eval: () => Promise.reject(new Error('should not call eval while offline')),
+      },
+      logger: {
+        warn(_obj: unknown, msg?: string): void {
+          if (typeof msg === 'string') {
+            warnings.push(msg);
+          }
+        },
+      },
+    });
+
+    const { app } = await createTestApp({
+      rateLimitStore: createRedisRateLimitStoreConfig(storeCtor),
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(warnings.length).toBeGreaterThanOrEqual(1);
   });
 });

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { RedisConfigError, parseBullMqConnectionOptions, sanitizeRedisTarget } from './redis.js';
+import {
+  RedisConfigError,
+  closeRedisClient,
+  computeFastFailRetryDelay,
+  createFastFailRedisClient,
+  parseBullMqConnectionOptions,
+  sanitizeRedisTarget,
+  waitForRedisReady,
+} from './redis.js';
 
 describe('parseBullMqConnectionOptions and sanitizeRedisTarget', () => {
   it('parses plain redis:// URLs using the explicit port and omits tls', () => {
@@ -61,5 +69,21 @@ describe('parseBullMqConnectionOptions and sanitizeRedisTarget', () => {
     expect(sanitized).not.toContain('super_secret_redis_pw');
 
     expect(sanitizeRedisTarget('http://bad.example.com')).toBe('<invalid-redis-url>');
+  });
+  it('computes capped exponential reconnect delays and rejects waitForRedisReady promptly with reconnect: true', async () => {
+    expect(computeFastFailRetryDelay(1)).toBe(500);
+    expect(computeFastFailRetryDelay(4)).toBe(2000);
+    expect(computeFastFailRetryDelay(20)).toBe(10_000);
+    expect(computeFastFailRetryDelay(100)).toBe(10_000);
+
+    const client = createFastFailRedisClient({
+      redisUrl: 'redis://127.0.0.1:1',
+      reconnect: true,
+    });
+    try {
+      await expect(waitForRedisReady(client, 60)).rejects.toThrow();
+    } finally {
+      await closeRedisClient(client, 200);
+    }
   });
 });

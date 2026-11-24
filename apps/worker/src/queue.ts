@@ -103,7 +103,13 @@ export function createIngestionQueue(options: CreateIngestionQueueOptions): Inge
  * (no colons allowed by BullMQ custom job IDs) to guarantee idempotent dispatch.
  */
 export async function enqueueIngestionJob(
-  queue: Pick<IngestionQueue, 'add'>,
+  queue: {
+    add(
+      name: typeof INGESTION_JOB_NAME,
+      data: IngestionQueueJobData,
+      opts: { jobId: string },
+    ): Promise<{ readonly id?: string }>;
+  },
   payload: IngestionQueueJobData,
 ): Promise<EnqueuedIngestionJobResult> {
   if (payload.jobId.length === 0 || payload.jobId.includes(':')) {

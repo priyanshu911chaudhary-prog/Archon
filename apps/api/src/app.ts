@@ -25,6 +25,7 @@ export interface BuildAppDependencies {
   readonly logger: Logger;
   readonly repository: IngestionRepository;
   readonly checkDbHealth: () => Promise<boolean>;
+  readonly checkRedisHealth?: () => Promise<boolean>;
   readonly githubPrecheck: Pick<GitHubPrecheckClient, 'precheckRepository'>;
   readonly enqueuer: IngestionJobEnqueuer;
   readonly rateLimitStore?: RateLimitStoreConfig;
@@ -86,6 +87,7 @@ export async function buildApp(deps: BuildAppDependencies): Promise<FastifyInsta
 
   registerHealthRoute(app, {
     checkDbHealth: deps.checkDbHealth,
+    checkRedisHealth: deps.checkRedisHealth,
     workerMode: deps.env.RUN_EMBEDDED_WORKER ? 'embedded' : 'external',
     startedAtMs,
     now: () => nowFn().getTime(),

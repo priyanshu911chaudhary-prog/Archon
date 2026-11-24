@@ -77,4 +77,7 @@ export {
   sanitizeRedisTarget,
   type CreateFastFailRedisClientOptions,
   type RedisConnectionConfig,
+  computeFastFailRetryDelay,
+  FAST_FAIL_RECONNECT_BASE_MS,
+  FAST_FAIL_RECONNECT_MAX_MS,
 } from './redis.js';
