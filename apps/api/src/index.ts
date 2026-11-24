@@ -24,7 +24,10 @@ export {
   type RepoHeadInfo,
 } from './github/precheck.js';
 export {
+  DEFAULT_ENQUEUE_TIMEOUT_MS,
+  createBullMqIngestionEnqueuer,
   createStubIngestionEnqueuer,
+  type CreateBullMqEnqueuerOptions,
   type EnqueueIngestionResult,
   type IngestionJobEnqueuer,
   type IngestionJobPayload,
@@ -32,8 +35,16 @@ export {
 export {
   INGEST_RATE_LIMIT_WINDOW_MS,
   createInMemoryRateLimitStore,
+  createRedisRateLimitStoreConfig,
   type RateLimitStoreConfig,
 } from './rate-limit.js';
+export {
+  DEFAULT_RATE_LIMIT_KEY_PREFIX,
+  RATE_LIMIT_INCR_LUA,
+  createRedisRateLimitStore,
+  type CreateRedisRateLimitStoreOptions,
+  type RedisRateLimitClient,
+} from './redis-rate-limit-store.js';
 export {
   createIngestionService,
   type IngestRepositoryInput,

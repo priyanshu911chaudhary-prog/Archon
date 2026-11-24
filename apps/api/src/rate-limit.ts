@@ -1,22 +1,28 @@
-import type { RateLimitPluginOptions } from '@fastify/rate-limit';
+import type { FastifyRateLimitStoreCtor, RateLimitPluginOptions } from '@fastify/rate-limit';
 import { AppApiError } from './errors.js';
 
 export const INGEST_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 
 /**
- * Abstraction for rate-limit storage. Only the in-memory store exists for now;
- * Step 3.3 adds a Redis variant here once ioredis is installed and verified.
+ * Discriminated rate-limit storage config. Uses @fastify/rate-limit's typed `store`
+ * constructor for Redis (never the untyped `redis?: any` option).
  */
-export interface RateLimitStoreConfig {
-  readonly kind: 'memory';
-}
+export type RateLimitStoreConfig =
+  | { readonly kind: 'memory' }
+  | { readonly kind: 'redis'; readonly store: FastifyRateLimitStoreCtor };
 
 export function createInMemoryRateLimitStore(): RateLimitStoreConfig {
   return { kind: 'memory' };
 }
 
-export function buildRateLimitPluginOptions(_store: RateLimitStoreConfig): RateLimitPluginOptions {
-  return {
+export function createRedisRateLimitStoreConfig(
+  store: FastifyRateLimitStoreCtor,
+): RateLimitStoreConfig {
+  return { kind: 'redis', store };
+}
+
+export function buildRateLimitPluginOptions(store: RateLimitStoreConfig): RateLimitPluginOptions {
+  const baseOptions: RateLimitPluginOptions = {
     global: false,
     addHeadersOnExceeding: {
       'x-ratelimit-limit': true,
@@ -29,7 +35,7 @@ export function buildRateLimitPluginOptions(_store: RateLimitStoreConfig): RateL
       'x-ratelimit-reset': true,
       'retry-after': true,
     },
-    // Key strictly on Fastify's computed request.ip (honours the trustProxy hop count)
+    // Always key strictly on Fastify's computed `request.ip` (respects trustProxy, never raw X-Forwarded-For)
     keyGenerator: (request) => request.ip,
     errorResponseBuilder: (_request, context) => {
       const retryAfterSec = Math.max(1, Math.ceil(context.ttl / 1000));
@@ -42,4 +48,14 @@ export function buildRateLimitPluginOptions(_store: RateLimitStoreConfig): RateL
       });
     },
   };
+
+  if (store.kind === 'redis') {
+    return {
+      ...baseOptions,
+      store: store.store,
+      skipOnError: true,
+    };
+  }
+
+  return baseOptions;
 }
