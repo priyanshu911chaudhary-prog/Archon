@@ -1,0 +1,1461 @@
+{
+  "schemaVersion": 1,
+  "repository": "vercel/nextjs-subscription-payments",
+  "commitSha": "bdd0813206e47e6b218d42f15a7976c8a0d3c3eb",
+  "annotationMethod": "ai-assisted-blind-source-review-pending-independent-review",
+  "samplingRationale": "Purposive 10-of-56-file sample selected blind from the source inventory prior to running Archon, covering Next.js App Router pages and API routes (app/page.tsx, app/api/webhooks/route.ts, app/signin/[id]/page.tsx), client UI and React forwardRef/barrel components (components/ui/Pricing/Pricing.tsx, components/ui/Button/Button.tsx, components/ui/Button/index.ts), server actions and baseUrl imports (utils/auth-helpers/server.ts), React cache()-wrapped Supabase queries (utils/supabase/queries.ts), Stripe server actions (utils/stripe/server.ts), and shared utilities (utils/helpers.ts).",
+  "scoringPolicy": {
+    "importsIdentity": "sourceQualifiedName + targetQualifiedName + edgeType",
+    "callsIdentity": "sourceQualifiedName + targetQualifiedName + edgeType + callSiteLine",
+    "scopeFiltering": "Filter predicted edges by emitted ExtractedNode.filePath membership in selectedSourceFiles; declarations in unselected files remain eligible targets.",
+    "uncertainCandidatePolicy": "Uncertain candidates must be predeclared with exact file/line/reason and are reported separately if predicted; zero uncertain candidates were declared in this manifest.",
+    "zeroDenominatorPolicy": "Report precision, recall, and F1 as N/A when denominator is 0; never coerce to 100%."
+  },
+  "selectedSourceFiles": [
+    "app/page.tsx",
+    "app/api/webhooks/route.ts",
+    "app/signin/[id]/page.tsx",
+    "components/ui/Pricing/Pricing.tsx",
+    "components/ui/Button/Button.tsx",
+    "components/ui/Button/index.ts",
+    "utils/auth-helpers/server.ts",
+    "utils/supabase/queries.ts",
+    "utils/stripe/server.ts",
+    "utils/helpers.ts"
+  ],
+  "annotatedFileProvenance": [
+    {
+      "path": "app/page.tsx",
+      "status": "complete",
+      "gitBlobId": "9098e13821c234019be4a7631b49d054bb196855",
+      "sha256": "e6bc944f04fc3728d3f923563a82e3c2d2d5ef11d6b903233b6d81f426f3b001",
+      "byteLength": 551
+    },
+    {
+      "path": "app/api/webhooks/route.ts",
+      "status": "complete",
+      "gitBlobId": "8371d42e4c557ab47847d3956844e91fb549beb2",
+      "sha256": "46594e21cf26c737f3fc05196eac1cb3ca22f08023e2992b8216f47550867950",
+      "byteLength": 3097
+    },
+    {
+      "path": "app/signin/[id]/page.tsx",
+      "status": "complete",
+      "gitBlobId": "7cda8bf4ce69976c28b1b3c0c0dfb34ba7a7e41e",
+      "sha256": "7a5eed4ee53c48619d8464ad10d2af6a31521017b4dedccf0cae446a6313a935",
+      "byteLength": 3742
+    },
+    {
+      "path": "components/ui/Pricing/Pricing.tsx",
+      "status": "complete",
+      "gitBlobId": "327e759e180747aec58c06a8856a732b45e2d57e",
+      "sha256": "b83a033dee8531dcdb450ead4d522923e6e9c2311670d86ad5125907871c6983",
+      "byteLength": 7795
+    },
+    {
+      "path": "components/ui/Button/Button.tsx",
+      "status": "complete",
+      "gitBlobId": "cb914853763ef55e9031e2399310f254410cbd9e",
+      "sha256": "93ed133b7cfa0bf2aa39d03cf8f7da4604033e4da736c58e83c1e0f2194a6bb6",
+      "byteLength": 1401
+    },
+    {
+      "path": "components/ui/Button/index.ts",
+      "status": "complete",
+      "gitBlobId": "efe8c800c0d2564010523498c90d2edf5f8d61a5",
+      "sha256": "a65c3c2970dacef32c23e7b2be25f520a03ed3eab219540548d7def0902c0c59",
+      "byteLength": 36
+    },
+    {
+      "path": "utils/auth-helpers/server.ts",
+      "status": "complete",
+      "gitBlobId": "ae4665867226d99e553717ca4eb9e1e521574449",
+      "sha256": "fbef5b91e68e12948c9b8a29f5395d7a1615dadbc39de236c4c5f8fcbf784728",
+      "byteLength": 8470
+    },
+    {
+      "path": "utils/supabase/queries.ts",
+      "status": "complete",
+      "gitBlobId": "f68a876e541ff404a3cfb1197bc9277a9b157596",
+      "sha256": "00122ae95eef20b3ce3f5cdf5285fcbe07d94e63e12771a0520e3adb79ae30d5",
+      "byteLength": 1068
+    },
+    {
+      "path": "utils/stripe/server.ts",
+      "status": "complete",
+      "gitBlobId": "dd48f0c2d01f308a333d8e100e76d576db720cac",
+      "sha256": "8b1de6d20e64fe4f10d5c4bd881608394303c19a1300e3efd5cda466f430afad",
+      "byteLength": 4426
+    },
+    {
+      "path": "utils/helpers.ts",
+      "status": "complete",
+      "gitBlobId": "0cf6f32b3e15f48edce962cc769a3c330bf8a6ec",
+      "sha256": "01aca39d4ff3321b65b967e02f7d0df00f41e6eaf065d08d0162ef0169cff50a",
+      "byteLength": 3517
+    }
+  ],
+  "referencedTargetAndConfigProvenance": [
+    {
+      "path": "tsconfig.json",
+      "role": "config",
+      "gitBlobId": "f59f0f059832d6677dbc656ab104fbe5488b42ae",
+      "sha256": "ad9f87afb881f84bef7f220822ae50b887622e5dd1760ddd63bab860a095bc33",
+      "byteLength": 658
+    },
+    {
+      "path": "types_db.ts",
+      "role": "unselected-import-target",
+      "gitBlobId": "7491c8ac297435d2becf626cef0bd5a57e48d0c4",
+      "sha256": "a482869cd64c8cdee876e5a8ed757729c2dba2972d521e5519500c2618ed2600",
+      "byteLength": 19536
+    },
+    {
+      "path": "components/icons/Logo.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "1ee5a968ed0363558048f7f1c1ab6421a427fa86",
+      "sha256": "69b7df8c352473a2e6360ee24ad1cbfe2a783381b691cc0098ab17b59279e5cb",
+      "byteLength": 528
+    },
+    {
+      "path": "components/ui/AuthForms/EmailSignIn.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "1860f729c0754e2566ffe4fdf4c0b788f57eda89",
+      "sha256": "4704796f532ce19b70b25b6ed15f58f5c8d2683134e06a141e26a73ad6697f76",
+      "byteLength": 2219
+    },
+    {
+      "path": "components/ui/AuthForms/ForgotPassword.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "bdf8f6b7e1cd6d3b42f5bc6431e597df789382a3",
+      "sha256": "9c3d1528069c16c9e5dea66b65ceea6cc6f117e79929e5e8d7e6dcd01170292b",
+      "byteLength": 2322
+    },
+    {
+      "path": "components/ui/AuthForms/OauthSignIn.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "7455d50b145394c462f7141dee261c0d0b5ae860",
+      "sha256": "6b64907dbe44c87a1c1f52d2261ea9754a842926ffb1d2e53a1bf50ac20af90f",
+      "byteLength": 1457
+    },
+    {
+      "path": "components/ui/AuthForms/PasswordSignIn.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "3ec8297d2b2e7b2b04e852102e2a71e86b0bd9d4",
+      "sha256": "6eaa22d85207a1678473dc3ee034a2c00da70487b7be71e75815a146fd05071f",
+      "byteLength": 2549
+    },
+    {
+      "path": "components/ui/AuthForms/Separator.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "d9c7cfc62bd9e8f7f21ff198f9044b2fb68d3d9a",
+      "sha256": "0741cfc69ab95a8a36bf3df8999b4cb0c21434461e11e04baf210dac9949a011",
+      "byteLength": 465
+    },
+    {
+      "path": "components/ui/AuthForms/Signup.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "cd98f04076203de24be808a53eb05ab5ac3deda3",
+      "sha256": "dab67b56c1c522b541c61ae9c35b6391507c4f4d9c7407d3f9fbf40d8afd8461",
+      "byteLength": 2419
+    },
+    {
+      "path": "components/ui/AuthForms/UpdatePassword.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "cd51488ee579d7f87076456f47f056108a50481a",
+      "sha256": "43a605036bb7998e20cc706c022267aa7b592de13086f66240eb11a8f984a914",
+      "byteLength": 1947
+    },
+    {
+      "path": "components/ui/Card/index.ts",
+      "role": "unselected-barrel-import-target",
+      "gitBlobId": "c68311df80b283bda7975c3475b73e0ca9c0a97a",
+      "sha256": "651b69cbd1fb360749880f3d2911462a89b5bd0dba1e88b4c5a739c45ae46dfb",
+      "byteLength": 34
+    },
+    {
+      "path": "components/ui/Card/Card.tsx",
+      "role": "unselected-call-target-via-barrel",
+      "gitBlobId": "f78a2861066406fe6d50005a5bd1b73b99a10dd7",
+      "sha256": "32506b8223f122cd30a17de026870642dea155cd2ee2338c4cdf0b94d0db870a",
+      "byteLength": 679
+    },
+    {
+      "path": "components/ui/LoadingDots/index.ts",
+      "role": "unselected-barrel-import-target",
+      "gitBlobId": "a8744cf54762f3cdb8ff3da78d64cfcdf1393228",
+      "sha256": "3c3360529638ea1ebf9c089890899e06926de56eb273da8686de920f53dee17a",
+      "byteLength": 41
+    },
+    {
+      "path": "components/ui/LoadingDots/LoadingDots.tsx",
+      "role": "unselected-call-target-via-barrel",
+      "gitBlobId": "b80687ab3f5a3a12da0a7d28e9a27b11e82fc9e3",
+      "sha256": "398a85c6368a6145d001672d003dbc95cff69bf2d12dce52d195e3a35f6a3317",
+      "byteLength": 206
+    },
+    {
+      "path": "components/ui/LogoCloud/index.ts",
+      "role": "unselected-barrel-import-target",
+      "gitBlobId": "1388865a4d9fe3db008d7efe8d9355b861ad84a2",
+      "sha256": "bdb77b95aef5a3d585e77ba7701a77fa7678dae542cc7e0884aac6a20fa80bfe",
+      "byteLength": 39
+    },
+    {
+      "path": "components/ui/LogoCloud/LogoCloud.tsx",
+      "role": "unselected-call-target-via-barrel",
+      "gitBlobId": "3dd84202960a0d126bd892983f2059fe5d78b30c",
+      "sha256": "657041d7a4682077249927fff9faa0bb2086dec5bfca0c493a9f86638ed0d67c",
+      "byteLength": 1903
+    },
+    {
+      "path": "utils/auth-helpers/settings.ts",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "fb159e816aa17e0904a4e38a2d541e9bf3ccac33",
+      "sha256": "42ea7d68dd7adf6c8a4fca5a7bdd31f8f0f479786e8459b1ca62ec79eebbbca4",
+      "byteLength": 1417
+    },
+    {
+      "path": "utils/stripe/client.ts",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "9731315381d702df87b0ca5397b763ecde5e8765",
+      "sha256": "95a26d96166949e1d4ddfd31d7454a0def890e4f470e4e8abeb2ae499528c214",
+      "byteLength": 359
+    },
+    {
+      "path": "utils/stripe/config.ts",
+      "role": "unselected-import-target",
+      "gitBlobId": "aff19d0ee1571e227c7ea408d0019178128fe184",
+      "sha256": "3bd26a901a81239d0c3aba887324793f6cc9cad4a73a0cfa1c9a8be968af40e3",
+      "byteLength": 564
+    },
+    {
+      "path": "utils/supabase/admin.ts",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "ece86ad38ee339f284a4c371cc97c5f7368df918",
+      "sha256": "ebe4ae5b9954cdc38f6ecd8558d6bea05f64626394c372765c732f72d66e8dd3",
+      "byteLength": 9821
+    },
+    {
+      "path": "utils/supabase/server.ts",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "ccf79c7cee963f0ff973fd788cd76bd6cfa82524",
+      "sha256": "e8443953f4333f7b7c9ee3268e0a689c2f1bd4d2f2c660a2ef36ba63706c6eab",
+      "byteLength": 1773
+    }
+  ],
+  "expectedImports": [
+    {
+      "sourceQualifiedName": "file:app/api/webhooks/route.ts",
+      "targetQualifiedName": "file:utils/stripe/config.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/api/webhooks/route.ts:2 -> import { stripe } from '@/utils/stripe/config'"
+    },
+    {
+      "sourceQualifiedName": "file:app/api/webhooks/route.ts",
+      "targetQualifiedName": "file:utils/supabase/admin.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/api/webhooks/route.ts:3-9 -> import { upsertProductRecord, upsertPriceRecord, manageSubscriptionStatusChange, deleteProductRecord, deletePriceRecord } from '@/utils/supabase/admin'"
+    },
+    {
+      "sourceQualifiedName": "file:app/page.tsx",
+      "targetQualifiedName": "file:components/ui/Pricing/Pricing.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "app/page.tsx:1 -> import Pricing from '@/components/ui/Pricing/Pricing'"
+    },
+    {
+      "sourceQualifiedName": "file:app/page.tsx",
+      "targetQualifiedName": "file:utils/supabase/queries.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/page.tsx:3-7 -> import { getProducts, getSubscription, getUser } from '@/utils/supabase/queries'"
+    },
+    {
+      "sourceQualifiedName": "file:app/page.tsx",
+      "targetQualifiedName": "file:utils/supabase/server.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/page.tsx:2 -> import { createClient } from '@/utils/supabase/server'"
+    },
+    {
+      "sourceQualifiedName": "file:app/signin/[id]/page.tsx",
+      "targetQualifiedName": "file:components/icons/Logo.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "app/signin/[id]/page.tsx:1 -> import Logo from '@/components/icons/Logo'"
+    },
+    {
+      "sourceQualifiedName": "file:app/signin/[id]/page.tsx",
+      "targetQualifiedName": "file:components/ui/AuthForms/EmailSignIn.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "app/signin/[id]/page.tsx:13 -> import EmailSignIn from '@/components/ui/AuthForms/EmailSignIn'"
+    },
+    {
+      "sourceQualifiedName": "file:app/signin/[id]/page.tsx",
+      "targetQualifiedName": "file:components/ui/AuthForms/ForgotPassword.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "app/signin/[id]/page.tsx:16 -> import ForgotPassword from '@/components/ui/AuthForms/ForgotPassword'"
+    },
+    {
+      "sourceQualifiedName": "file:app/signin/[id]/page.tsx",
+      "targetQualifiedName": "file:components/ui/AuthForms/OauthSignIn.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "app/signin/[id]/page.tsx:15 -> import OauthSignIn from '@/components/ui/AuthForms/OauthSignIn'"
+    },
+    {
+      "sourceQualifiedName": "file:app/signin/[id]/page.tsx",
+      "targetQualifiedName": "file:components/ui/AuthForms/PasswordSignIn.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "app/signin/[id]/page.tsx:12 -> import PasswordSignIn from '@/components/ui/AuthForms/PasswordSignIn'"
+    },
+    {
+      "sourceQualifiedName": "file:app/signin/[id]/page.tsx",
+      "targetQualifiedName": "file:components/ui/AuthForms/Separator.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "app/signin/[id]/page.tsx:14 -> import Separator from '@/components/ui/AuthForms/Separator'"
+    },
+    {
+      "sourceQualifiedName": "file:app/signin/[id]/page.tsx",
+      "targetQualifiedName": "file:components/ui/AuthForms/Signup.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "app/signin/[id]/page.tsx:18 -> import SignUp from '@/components/ui/AuthForms/Signup'"
+    },
+    {
+      "sourceQualifiedName": "file:app/signin/[id]/page.tsx",
+      "targetQualifiedName": "file:components/ui/AuthForms/UpdatePassword.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "app/signin/[id]/page.tsx:17 -> import UpdatePassword from '@/components/ui/AuthForms/UpdatePassword'"
+    },
+    {
+      "sourceQualifiedName": "file:app/signin/[id]/page.tsx",
+      "targetQualifiedName": "file:components/ui/Card/index.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/signin/[id]/page.tsx:11 -> import Card from '@/components/ui/Card' (preserves direct barrel hop)"
+    },
+    {
+      "sourceQualifiedName": "file:app/signin/[id]/page.tsx",
+      "targetQualifiedName": "file:utils/auth-helpers/settings.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/signin/[id]/page.tsx:5-10 -> import { getAuthTypes, getViewTypes, getDefaultSignInView, getRedirectMethod } from '@/utils/auth-helpers/settings'"
+    },
+    {
+      "sourceQualifiedName": "file:app/signin/[id]/page.tsx",
+      "targetQualifiedName": "file:utils/supabase/server.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/signin/[id]/page.tsx:2 -> import { createClient } from '@/utils/supabase/server'"
+    },
+    {
+      "sourceQualifiedName": "file:components/ui/Button/Button.tsx",
+      "targetQualifiedName": "file:components/ui/LoadingDots/index.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "components/ui/Button/Button.tsx:7 -> import LoadingDots from '@/components/ui/LoadingDots' (preserves direct barrel hop)"
+    },
+    {
+      "sourceQualifiedName": "file:components/ui/Button/index.ts",
+      "targetQualifiedName": "file:components/ui/Button/Button.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "components/ui/Button/index.ts:1 -> export { default } from './Button'"
+    },
+    {
+      "sourceQualifiedName": "file:components/ui/Pricing/Pricing.tsx",
+      "targetQualifiedName": "file:components/ui/Button/index.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "components/ui/Pricing/Pricing.tsx:3 -> import Button from '@/components/ui/Button' (preserves direct barrel hop)"
+    },
+    {
+      "sourceQualifiedName": "file:components/ui/Pricing/Pricing.tsx",
+      "targetQualifiedName": "file:components/ui/LogoCloud/index.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "components/ui/Pricing/Pricing.tsx:4 -> import LogoCloud from '@/components/ui/LogoCloud' (preserves direct barrel hop)"
+    },
+    {
+      "sourceQualifiedName": "file:components/ui/Pricing/Pricing.tsx",
+      "targetQualifiedName": "file:types_db.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "components/ui/Pricing/Pricing.tsx:5 -> import type { Tables } from '@/types_db' (note: types_db.ts is UTF-16LE encoded in pinned snapshot)"
+    },
+    {
+      "sourceQualifiedName": "file:components/ui/Pricing/Pricing.tsx",
+      "targetQualifiedName": "file:utils/helpers.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "components/ui/Pricing/Pricing.tsx:8 -> import { getErrorRedirect } from '@/utils/helpers'"
+    },
+    {
+      "sourceQualifiedName": "file:components/ui/Pricing/Pricing.tsx",
+      "targetQualifiedName": "file:utils/stripe/client.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "components/ui/Pricing/Pricing.tsx:6 -> import { getStripe } from '@/utils/stripe/client'"
+    },
+    {
+      "sourceQualifiedName": "file:components/ui/Pricing/Pricing.tsx",
+      "targetQualifiedName": "file:utils/stripe/server.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "components/ui/Pricing/Pricing.tsx:7 -> import { checkoutWithStripe } from '@/utils/stripe/server'"
+    },
+    {
+      "sourceQualifiedName": "file:utils/auth-helpers/server.ts",
+      "targetQualifiedName": "file:utils/auth-helpers/settings.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "utils/auth-helpers/server.ts:7 -> import { getAuthTypes } from 'utils/auth-helpers/settings' (resolved via tsconfig baseUrl '.')"
+    },
+    {
+      "sourceQualifiedName": "file:utils/auth-helpers/server.ts",
+      "targetQualifiedName": "file:utils/helpers.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "utils/auth-helpers/server.ts:6 -> import { getURL, getErrorRedirect, getStatusRedirect } from 'utils/helpers' (resolved via tsconfig baseUrl '.')"
+    },
+    {
+      "sourceQualifiedName": "file:utils/auth-helpers/server.ts",
+      "targetQualifiedName": "file:utils/supabase/server.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "utils/auth-helpers/server.ts:3 -> import { createClient } from '@/utils/supabase/server'"
+    },
+    {
+      "sourceQualifiedName": "file:utils/helpers.ts",
+      "targetQualifiedName": "file:types_db.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "utils/helpers.ts:1 -> import type { Tables } from '@/types_db' (note: types_db.ts is UTF-16LE encoded in pinned snapshot)"
+    },
+    {
+      "sourceQualifiedName": "file:utils/stripe/server.ts",
+      "targetQualifiedName": "file:types_db.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "utils/stripe/server.ts:12 -> import { Tables } from '@/types_db' (note: types_db.ts is UTF-16LE encoded in pinned snapshot)"
+    },
+    {
+      "sourceQualifiedName": "file:utils/stripe/server.ts",
+      "targetQualifiedName": "file:utils/helpers.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "utils/stripe/server.ts:7-11 -> import { getURL, getErrorRedirect, calculateTrialEndUnixTimestamp } from '@/utils/helpers'"
+    },
+    {
+      "sourceQualifiedName": "file:utils/stripe/server.ts",
+      "targetQualifiedName": "file:utils/stripe/config.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "utils/stripe/server.ts:4 -> import { stripe } from '@/utils/stripe/config'"
+    },
+    {
+      "sourceQualifiedName": "file:utils/stripe/server.ts",
+      "targetQualifiedName": "file:utils/supabase/admin.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "utils/stripe/server.ts:6 -> import { createOrRetrieveCustomer } from '@/utils/supabase/admin'"
+    },
+    {
+      "sourceQualifiedName": "file:utils/stripe/server.ts",
+      "targetQualifiedName": "file:utils/supabase/server.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "utils/stripe/server.ts:5 -> import { createClient } from '@/utils/supabase/server'"
+    }
+  ],
+  "expectedCalls": [
+    {
+      "sourceQualifiedName": "app/api/webhooks/route.ts::fn:POST",
+      "targetQualifiedName": "utils/supabase/admin.ts::fn:deletePriceRecord",
+      "edgeType": "CALLS",
+      "callSiteLine": 52,
+      "evidence": "app/api/webhooks/route.ts:52 -> await deletePriceRecord(event.data.object as Stripe.Price)"
+    },
+    {
+      "sourceQualifiedName": "app/api/webhooks/route.ts::fn:POST",
+      "targetQualifiedName": "utils/supabase/admin.ts::fn:deleteProductRecord",
+      "edgeType": "CALLS",
+      "callSiteLine": 55,
+      "evidence": "app/api/webhooks/route.ts:55 -> await deleteProductRecord(event.data.object as Stripe.Product)"
+    },
+    {
+      "sourceQualifiedName": "app/api/webhooks/route.ts::fn:POST",
+      "targetQualifiedName": "utils/supabase/admin.ts::fn:manageSubscriptionStatusChange",
+      "edgeType": "CALLS",
+      "callSiteLine": 61,
+      "evidence": "app/api/webhooks/route.ts:61 -> await manageSubscriptionStatusChange(subscription.id, ...)"
+    },
+    {
+      "sourceQualifiedName": "app/api/webhooks/route.ts::fn:POST",
+      "targetQualifiedName": "utils/supabase/admin.ts::fn:manageSubscriptionStatusChange",
+      "edgeType": "CALLS",
+      "callSiteLine": 71,
+      "evidence": "app/api/webhooks/route.ts:71 -> await manageSubscriptionStatusChange(subscriptionId as string, ...) on separate line from L61"
+    },
+    {
+      "sourceQualifiedName": "app/api/webhooks/route.ts::fn:POST",
+      "targetQualifiedName": "utils/supabase/admin.ts::fn:upsertPriceRecord",
+      "edgeType": "CALLS",
+      "callSiteLine": 49,
+      "evidence": "app/api/webhooks/route.ts:49 -> await upsertPriceRecord(event.data.object as Stripe.Price)"
+    },
+    {
+      "sourceQualifiedName": "app/api/webhooks/route.ts::fn:POST",
+      "targetQualifiedName": "utils/supabase/admin.ts::fn:upsertProductRecord",
+      "edgeType": "CALLS",
+      "callSiteLine": 45,
+      "evidence": "app/api/webhooks/route.ts:45 -> await upsertProductRecord(event.data.object as Stripe.Product)"
+    },
+    {
+      "sourceQualifiedName": "app/page.tsx::fn:PricingPage",
+      "targetQualifiedName": "components/ui/Pricing/Pricing.tsx::fn:Pricing",
+      "edgeType": "CALLS",
+      "callSiteLine": 18,
+      "evidence": "app/page.tsx:18 -> <Pricing user={user} products={products ?? []} subscription={subscription} /> (JSX static component usage)"
+    },
+    {
+      "sourceQualifiedName": "app/page.tsx::fn:PricingPage",
+      "targetQualifiedName": "utils/supabase/queries.ts::sym:getProducts",
+      "edgeType": "CALLS",
+      "callSiteLine": 13,
+      "evidence": "app/page.tsx:13 -> getProducts(supabase) targeting React cache()-wrapped exported symbol in utils/supabase/queries.ts"
+    },
+    {
+      "sourceQualifiedName": "app/page.tsx::fn:PricingPage",
+      "targetQualifiedName": "utils/supabase/queries.ts::sym:getSubscription",
+      "edgeType": "CALLS",
+      "callSiteLine": 14,
+      "evidence": "app/page.tsx:14 -> getSubscription(supabase) targeting React cache()-wrapped exported symbol in utils/supabase/queries.ts"
+    },
+    {
+      "sourceQualifiedName": "app/page.tsx::fn:PricingPage",
+      "targetQualifiedName": "utils/supabase/queries.ts::sym:getUser",
+      "edgeType": "CALLS",
+      "callSiteLine": 12,
+      "evidence": "app/page.tsx:12 -> getUser(supabase) targeting React cache()-wrapped exported symbol in utils/supabase/queries.ts"
+    },
+    {
+      "sourceQualifiedName": "app/page.tsx::fn:PricingPage",
+      "targetQualifiedName": "utils/supabase/server.ts::fn:createClient",
+      "edgeType": "CALLS",
+      "callSiteLine": 10,
+      "evidence": "app/page.tsx:10 -> const supabase = createClient()"
+    },
+    {
+      "sourceQualifiedName": "app/signin/[id]/page.tsx::fn:SignIn",
+      "targetQualifiedName": "components/icons/Logo.tsx::fn:Logo",
+      "edgeType": "CALLS",
+      "callSiteLine": 61,
+      "evidence": "app/signin/[id]/page.tsx:61 -> <Logo width=\"64px\" height=\"64px\" /> (JSX static component usage)"
+    },
+    {
+      "sourceQualifiedName": "app/signin/[id]/page.tsx::fn:SignIn",
+      "targetQualifiedName": "components/ui/AuthForms/EmailSignIn.tsx::fn:EmailSignIn",
+      "edgeType": "CALLS",
+      "callSiteLine": 81,
+      "evidence": "app/signin/[id]/page.tsx:81 -> <EmailSignIn ... /> (JSX static component usage)"
+    },
+    {
+      "sourceQualifiedName": "app/signin/[id]/page.tsx::fn:SignIn",
+      "targetQualifiedName": "components/ui/AuthForms/ForgotPassword.tsx::fn:ForgotPassword",
+      "edgeType": "CALLS",
+      "callSiteLine": 88,
+      "evidence": "app/signin/[id]/page.tsx:88 -> <ForgotPassword ... /> (JSX static component usage)"
+    },
+    {
+      "sourceQualifiedName": "app/signin/[id]/page.tsx::fn:SignIn",
+      "targetQualifiedName": "components/ui/AuthForms/OauthSignIn.tsx::fn:OauthSignIn",
+      "edgeType": "CALLS",
+      "callSiteLine": 105,
+      "evidence": "app/signin/[id]/page.tsx:105 -> <OauthSignIn /> (JSX static component usage)"
+    },
+    {
+      "sourceQualifiedName": "app/signin/[id]/page.tsx::fn:SignIn",
+      "targetQualifiedName": "components/ui/AuthForms/PasswordSignIn.tsx::fn:PasswordSignIn",
+      "edgeType": "CALLS",
+      "callSiteLine": 75,
+      "evidence": "app/signin/[id]/page.tsx:75 -> <PasswordSignIn ... /> (JSX static component usage)"
+    },
+    {
+      "sourceQualifiedName": "app/signin/[id]/page.tsx::fn:SignIn",
+      "targetQualifiedName": "components/ui/AuthForms/Separator.tsx::fn:Separator",
+      "edgeType": "CALLS",
+      "callSiteLine": 104,
+      "evidence": "app/signin/[id]/page.tsx:104 -> <Separator text=\"Third-party sign-in\" /> (JSX static component usage)"
+    },
+    {
+      "sourceQualifiedName": "app/signin/[id]/page.tsx::fn:SignIn",
+      "targetQualifiedName": "components/ui/AuthForms/Signup.tsx::fn:SignUp",
+      "edgeType": "CALLS",
+      "callSiteLine": 98,
+      "evidence": "app/signin/[id]/page.tsx:98 -> <SignUp ... /> (JSX static component usage)"
+    },
+    {
+      "sourceQualifiedName": "app/signin/[id]/page.tsx::fn:SignIn",
+      "targetQualifiedName": "components/ui/AuthForms/UpdatePassword.tsx::fn:UpdatePassword",
+      "edgeType": "CALLS",
+      "callSiteLine": 95,
+      "evidence": "app/signin/[id]/page.tsx:95 -> <UpdatePassword ... /> (JSX static component usage)"
+    },
+    {
+      "sourceQualifiedName": "app/signin/[id]/page.tsx::fn:SignIn",
+      "targetQualifiedName": "components/ui/Card/Card.tsx::fn:Card",
+      "edgeType": "CALLS",
+      "callSiteLine": 63,
+      "evidence": "app/signin/[id]/page.tsx:63 -> <Card title={...}> resolved through Card/index.ts barrel to Card/Card.tsx::fn:Card"
+    },
+    {
+      "sourceQualifiedName": "app/signin/[id]/page.tsx::fn:SignIn",
+      "targetQualifiedName": "utils/auth-helpers/settings.ts::fn:getAuthTypes",
+      "edgeType": "CALLS",
+      "callSiteLine": 27,
+      "evidence": "app/signin/[id]/page.tsx:27 -> getAuthTypes()"
+    },
+    {
+      "sourceQualifiedName": "app/signin/[id]/page.tsx::fn:SignIn",
+      "targetQualifiedName": "utils/auth-helpers/settings.ts::fn:getDefaultSignInView",
+      "edgeType": "CALLS",
+      "callSiteLine": 40,
+      "evidence": "app/signin/[id]/page.tsx:40 -> getDefaultSignInView(preferredSignInView)"
+    },
+    {
+      "sourceQualifiedName": "app/signin/[id]/page.tsx::fn:SignIn",
+      "targetQualifiedName": "utils/auth-helpers/settings.ts::fn:getRedirectMethod",
+      "edgeType": "CALLS",
+      "callSiteLine": 29,
+      "evidence": "app/signin/[id]/page.tsx:29 -> getRedirectMethod()"
+    },
+    {
+      "sourceQualifiedName": "app/signin/[id]/page.tsx::fn:SignIn",
+      "targetQualifiedName": "utils/auth-helpers/settings.ts::fn:getViewTypes",
+      "edgeType": "CALLS",
+      "callSiteLine": 28,
+      "evidence": "app/signin/[id]/page.tsx:28 -> getViewTypes()"
+    },
+    {
+      "sourceQualifiedName": "app/signin/[id]/page.tsx::fn:SignIn",
+      "targetQualifiedName": "utils/supabase/server.ts::fn:createClient",
+      "edgeType": "CALLS",
+      "callSiteLine": 45,
+      "evidence": "app/signin/[id]/page.tsx:45 -> const supabase = createClient()"
+    },
+    {
+      "sourceQualifiedName": "components/ui/Button/Button.tsx::sym:Button",
+      "targetQualifiedName": "components/ui/LoadingDots/LoadingDots.tsx::fn:LoadingDots",
+      "edgeType": "CALLS",
+      "callSiteLine": 58,
+      "evidence": "components/ui/Button/Button.tsx:58 -> <LoadingDots /> inside React forwardRef HOC Button, resolved through LoadingDots/index.ts barrel"
+    },
+    {
+      "sourceQualifiedName": "components/ui/Pricing/Pricing.tsx::fn:Pricing",
+      "targetQualifiedName": "components/ui/Button/Button.tsx::sym:Button",
+      "edgeType": "CALLS",
+      "callSiteLine": 185,
+      "evidence": "components/ui/Pricing/Pricing.tsx:185 -> <Button ...> resolved through Button/index.ts barrel to recognized React forwardRef HOC sym:Button"
+    },
+    {
+      "sourceQualifiedName": "components/ui/Pricing/Pricing.tsx::fn:Pricing",
+      "targetQualifiedName": "components/ui/LogoCloud/LogoCloud.tsx::fn:LogoCloud",
+      "edgeType": "CALLS",
+      "callSiteLine": 102,
+      "evidence": "components/ui/Pricing/Pricing.tsx:102 -> <LogoCloud /> resolved through LogoCloud/index.ts barrel"
+    },
+    {
+      "sourceQualifiedName": "components/ui/Pricing/Pricing.tsx::fn:Pricing",
+      "targetQualifiedName": "components/ui/LogoCloud/LogoCloud.tsx::fn:LogoCloud",
+      "edgeType": "CALLS",
+      "callSiteLine": 199,
+      "evidence": "components/ui/Pricing/Pricing.tsx:199 -> <LogoCloud /> resolved through LogoCloud/index.ts barrel on separate line from L102"
+    },
+    {
+      "sourceQualifiedName": "components/ui/Pricing/Pricing.tsx::fn:Pricing",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 70,
+      "evidence": "components/ui/Pricing/Pricing.tsx:70 -> getErrorRedirect(...) inside nested handleStripeCheckout closure"
+    },
+    {
+      "sourceQualifiedName": "components/ui/Pricing/Pricing.tsx::fn:Pricing",
+      "targetQualifiedName": "utils/stripe/client.ts::fn:getStripe",
+      "edgeType": "CALLS",
+      "callSiteLine": 78,
+      "evidence": "components/ui/Pricing/Pricing.tsx:78 -> await getStripe() inside nested handleStripeCheckout closure"
+    },
+    {
+      "sourceQualifiedName": "components/ui/Pricing/Pricing.tsx::fn:Pricing",
+      "targetQualifiedName": "utils/stripe/server.ts::fn:checkoutWithStripe",
+      "edgeType": "CALLS",
+      "callSiteLine": 57,
+      "evidence": "components/ui/Pricing/Pricing.tsx:57 -> await checkoutWithStripe(price, currentPath) inside nested handleStripeCheckout closure"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:SignOut",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 25,
+      "evidence": "utils/auth-helpers/server.ts:25 -> return getErrorRedirect(...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:SignOut",
+      "targetQualifiedName": "utils/supabase/server.ts::fn:createClient",
+      "edgeType": "CALLS",
+      "callSiteLine": 21,
+      "evidence": "utils/auth-helpers/server.ts:21 -> const supabase = createClient()"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:requestPasswordUpdate",
+      "targetQualifiedName": "utils/auth-helpers/server.ts::fn:isValidEmail",
+      "edgeType": "CALLS",
+      "callSiteLine": 96,
+      "evidence": "utils/auth-helpers/server.ts:96 -> if (!isValidEmail(email))"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:requestPasswordUpdate",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 97,
+      "evidence": "utils/auth-helpers/server.ts:97 -> redirectPath = getErrorRedirect('/signin/forgot_password', 'Invalid email address.', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:requestPasswordUpdate",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 111,
+      "evidence": "utils/auth-helpers/server.ts:111 -> redirectPath = getErrorRedirect('/signin/forgot_password', error.message, ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:requestPasswordUpdate",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 124,
+      "evidence": "utils/auth-helpers/server.ts:124 -> redirectPath = getErrorRedirect('/signin/forgot_password', 'Hmm... Something went wrong.', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:requestPasswordUpdate",
+      "targetQualifiedName": "utils/helpers.ts::fn:getStatusRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 117,
+      "evidence": "utils/auth-helpers/server.ts:117 -> redirectPath = getStatusRedirect('/signin/forgot_password', 'Success!', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:requestPasswordUpdate",
+      "targetQualifiedName": "utils/helpers.ts::fn:getURL",
+      "edgeType": "CALLS",
+      "callSiteLine": 90,
+      "evidence": "utils/auth-helpers/server.ts:90 -> const callbackURL = getURL('/auth/reset_password')"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:requestPasswordUpdate",
+      "targetQualifiedName": "utils/supabase/server.ts::fn:createClient",
+      "edgeType": "CALLS",
+      "callSiteLine": 104,
+      "evidence": "utils/auth-helpers/server.ts:104 -> const supabase = createClient()"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signInWithEmail",
+      "targetQualifiedName": "utils/auth-helpers/server.ts::fn:isValidEmail",
+      "edgeType": "CALLS",
+      "callSiteLine": 42,
+      "evidence": "utils/auth-helpers/server.ts:42 -> if (!isValidEmail(email))"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signInWithEmail",
+      "targetQualifiedName": "utils/auth-helpers/settings.ts::fn:getAuthTypes",
+      "edgeType": "CALLS",
+      "callSiteLine": 57,
+      "evidence": "utils/auth-helpers/server.ts:57 -> const { allowPassword } = getAuthTypes()"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signInWithEmail",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 43,
+      "evidence": "utils/auth-helpers/server.ts:43 -> redirectPath = getErrorRedirect('/signin/email_signin', 'Invalid email address.', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signInWithEmail",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 65,
+      "evidence": "utils/auth-helpers/server.ts:65 -> redirectPath = getErrorRedirect('/signin/email_signin', 'You could not be signed in.', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signInWithEmail",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 79,
+      "evidence": "utils/auth-helpers/server.ts:79 -> redirectPath = getErrorRedirect('/signin/email_signin', 'Hmm... Something went wrong.', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signInWithEmail",
+      "targetQualifiedName": "utils/helpers.ts::fn:getStatusRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 72,
+      "evidence": "utils/auth-helpers/server.ts:72 -> redirectPath = getStatusRedirect('/signin/email_signin', 'Success!', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signInWithEmail",
+      "targetQualifiedName": "utils/helpers.ts::fn:getURL",
+      "edgeType": "CALLS",
+      "callSiteLine": 37,
+      "evidence": "utils/auth-helpers/server.ts:37 -> const callbackURL = getURL('/auth/callback')"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signInWithEmail",
+      "targetQualifiedName": "utils/supabase/server.ts::fn:createClient",
+      "edgeType": "CALLS",
+      "callSiteLine": 50,
+      "evidence": "utils/auth-helpers/server.ts:50 -> const supabase = createClient()"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signInWithPassword",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 147,
+      "evidence": "utils/auth-helpers/server.ts:147 -> redirectPath = getErrorRedirect('/signin/password_signin', 'Sign in failed.', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signInWithPassword",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 156,
+      "evidence": "utils/auth-helpers/server.ts:156 -> redirectPath = getErrorRedirect('/signin/password_signin', 'Hmm... Something went wrong.', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signInWithPassword",
+      "targetQualifiedName": "utils/helpers.ts::fn:getStatusRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 154,
+      "evidence": "utils/auth-helpers/server.ts:154 -> redirectPath = getStatusRedirect('/', 'Success!', 'You are now signed in.')"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signInWithPassword",
+      "targetQualifiedName": "utils/supabase/server.ts::fn:createClient",
+      "edgeType": "CALLS",
+      "callSiteLine": 140,
+      "evidence": "utils/auth-helpers/server.ts:140 -> const supabase = createClient()"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signUp",
+      "targetQualifiedName": "utils/auth-helpers/server.ts::fn:isValidEmail",
+      "edgeType": "CALLS",
+      "callSiteLine": 173,
+      "evidence": "utils/auth-helpers/server.ts:173 -> if (!isValidEmail(email))"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signUp",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 174,
+      "evidence": "utils/auth-helpers/server.ts:174 -> redirectPath = getErrorRedirect('/signin/signup', 'Invalid email address.', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signUp",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 191,
+      "evidence": "utils/auth-helpers/server.ts:191 -> redirectPath = getErrorRedirect('/signin/signup', 'Sign up failed.', error.message)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signUp",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 203,
+      "evidence": "utils/auth-helpers/server.ts:203 -> redirectPath = getErrorRedirect('/signin/signup', 'Sign up failed.', 'There is already an account...')"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signUp",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 215,
+      "evidence": "utils/auth-helpers/server.ts:215 -> redirectPath = getErrorRedirect('/signin/signup', 'Hmm... Something went wrong.', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signUp",
+      "targetQualifiedName": "utils/helpers.ts::fn:getStatusRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 197,
+      "evidence": "utils/auth-helpers/server.ts:197 -> redirectPath = getStatusRedirect('/', 'Success!', 'You are now signed in.')"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signUp",
+      "targetQualifiedName": "utils/helpers.ts::fn:getStatusRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 209,
+      "evidence": "utils/auth-helpers/server.ts:209 -> redirectPath = getStatusRedirect('/', 'Success!', 'Please check your email...')"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signUp",
+      "targetQualifiedName": "utils/helpers.ts::fn:getURL",
+      "edgeType": "CALLS",
+      "callSiteLine": 167,
+      "evidence": "utils/auth-helpers/server.ts:167 -> const callbackURL = getURL('/auth/callback')"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:signUp",
+      "targetQualifiedName": "utils/supabase/server.ts::fn:createClient",
+      "edgeType": "CALLS",
+      "callSiteLine": 181,
+      "evidence": "utils/auth-helpers/server.ts:181 -> const supabase = createClient()"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updateEmail",
+      "targetQualifiedName": "utils/auth-helpers/server.ts::fn:isValidEmail",
+      "edgeType": "CALLS",
+      "callSiteLine": 272,
+      "evidence": "utils/auth-helpers/server.ts:272 -> if (!isValidEmail(newEmail))"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updateEmail",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 273,
+      "evidence": "utils/auth-helpers/server.ts:273 -> return getErrorRedirect('/account', 'Your email could not be updated.', 'Invalid email address.')"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updateEmail",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 294,
+      "evidence": "utils/auth-helpers/server.ts:294 -> return getErrorRedirect('/account', 'Your email could not be updated.', error.message)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updateEmail",
+      "targetQualifiedName": "utils/helpers.ts::fn:getStatusRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 283,
+      "evidence": "utils/auth-helpers/server.ts:283 -> nested getStatusRedirect('/account', 'Success!', ...) inside getURL() argument"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updateEmail",
+      "targetQualifiedName": "utils/helpers.ts::fn:getStatusRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 300,
+      "evidence": "utils/auth-helpers/server.ts:300 -> return getStatusRedirect('/account', 'Confirmation emails sent.', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updateEmail",
+      "targetQualifiedName": "utils/helpers.ts::fn:getURL",
+      "edgeType": "CALLS",
+      "callSiteLine": 282,
+      "evidence": "utils/auth-helpers/server.ts:282 -> const callbackUrl = getURL(...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updateEmail",
+      "targetQualifiedName": "utils/supabase/server.ts::fn:createClient",
+      "edgeType": "CALLS",
+      "callSiteLine": 280,
+      "evidence": "utils/auth-helpers/server.ts:280 -> const supabase = createClient()"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updateName",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 318,
+      "evidence": "utils/auth-helpers/server.ts:318 -> return getErrorRedirect('/account', 'Your name could not be updated.', error.message)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updateName",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 330,
+      "evidence": "utils/auth-helpers/server.ts:330 -> return getErrorRedirect('/account', 'Hmm... Something went wrong.', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updateName",
+      "targetQualifiedName": "utils/helpers.ts::fn:getStatusRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 324,
+      "evidence": "utils/auth-helpers/server.ts:324 -> return getStatusRedirect('/account', 'Success!', 'Your name has been updated.')"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updateName",
+      "targetQualifiedName": "utils/supabase/server.ts::fn:createClient",
+      "edgeType": "CALLS",
+      "callSiteLine": 312,
+      "evidence": "utils/auth-helpers/server.ts:312 -> const supabase = createClient()"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updatePassword",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 232,
+      "evidence": "utils/auth-helpers/server.ts:232 -> redirectPath = getErrorRedirect('/signin/update_password', ..., 'Passwords do not match.')"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updatePassword",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 245,
+      "evidence": "utils/auth-helpers/server.ts:245 -> redirectPath = getErrorRedirect('/signin/update_password', ..., error.message)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updatePassword",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 257,
+      "evidence": "utils/auth-helpers/server.ts:257 -> redirectPath = getErrorRedirect('/signin/update_password', 'Hmm... Something went wrong.', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updatePassword",
+      "targetQualifiedName": "utils/helpers.ts::fn:getStatusRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 251,
+      "evidence": "utils/auth-helpers/server.ts:251 -> redirectPath = getStatusRedirect('/', 'Success!', 'Your password has been updated.')"
+    },
+    {
+      "sourceQualifiedName": "utils/auth-helpers/server.ts::fn:updatePassword",
+      "targetQualifiedName": "utils/supabase/server.ts::fn:createClient",
+      "edgeType": "CALLS",
+      "callSiteLine": 239,
+      "evidence": "utils/auth-helpers/server.ts:239 -> const supabase = createClient()"
+    },
+    {
+      "sourceQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "targetQualifiedName": "utils/helpers.ts::fn:getToastRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 126,
+      "evidence": "utils/helpers.ts:126 -> getToastRedirect(path, 'error', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/helpers.ts::fn:getStatusRedirect",
+      "targetQualifiedName": "utils/helpers.ts::fn:getToastRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 110,
+      "evidence": "utils/helpers.ts:110 -> getToastRedirect(path, 'status', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/stripe/server.ts::fn:checkoutWithStripe",
+      "targetQualifiedName": "utils/helpers.ts::fn:calculateTrialEndUnixTimestamp",
+      "edgeType": "CALLS",
+      "callSiteLine": 69,
+      "evidence": "utils/stripe/server.ts:69 -> calculateTrialEndUnixTimestamp(price.trial_period_days) inside console.log() argument"
+    },
+    {
+      "sourceQualifiedName": "utils/stripe/server.ts::fn:checkoutWithStripe",
+      "targetQualifiedName": "utils/helpers.ts::fn:calculateTrialEndUnixTimestamp",
+      "edgeType": "CALLS",
+      "callSiteLine": 76,
+      "evidence": "utils/stripe/server.ts:76 -> calculateTrialEndUnixTimestamp(price.trial_period_days) on separate line from L69"
+    },
+    {
+      "sourceQualifiedName": "utils/stripe/server.ts::fn:checkoutWithStripe",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 104,
+      "evidence": "utils/stripe/server.ts:104 -> errorRedirect: getErrorRedirect(redirectPath, error.message, ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/stripe/server.ts::fn:checkoutWithStripe",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 112,
+      "evidence": "utils/stripe/server.ts:112 -> errorRedirect: getErrorRedirect(redirectPath, 'An unknown error occurred.', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/stripe/server.ts::fn:checkoutWithStripe",
+      "targetQualifiedName": "utils/helpers.ts::fn:getURL",
+      "edgeType": "CALLS",
+      "callSiteLine": 63,
+      "evidence": "utils/stripe/server.ts:63 -> cancel_url: getURL()"
+    },
+    {
+      "sourceQualifiedName": "utils/stripe/server.ts::fn:checkoutWithStripe",
+      "targetQualifiedName": "utils/helpers.ts::fn:getURL",
+      "edgeType": "CALLS",
+      "callSiteLine": 64,
+      "evidence": "utils/stripe/server.ts:64 -> success_url: getURL(redirectPath) on separate line from L63"
+    },
+    {
+      "sourceQualifiedName": "utils/stripe/server.ts::fn:checkoutWithStripe",
+      "targetQualifiedName": "utils/supabase/admin.ts::fn:createOrRetrieveCustomer",
+      "edgeType": "CALLS",
+      "callSiteLine": 41,
+      "evidence": "utils/stripe/server.ts:41 -> customer = await createOrRetrieveCustomer({ uuid, email })"
+    },
+    {
+      "sourceQualifiedName": "utils/stripe/server.ts::fn:checkoutWithStripe",
+      "targetQualifiedName": "utils/supabase/server.ts::fn:createClient",
+      "edgeType": "CALLS",
+      "callSiteLine": 27,
+      "evidence": "utils/stripe/server.ts:27 -> const supabase = createClient()"
+    },
+    {
+      "sourceQualifiedName": "utils/stripe/server.ts::fn:createStripePortal",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 168,
+      "evidence": "utils/stripe/server.ts:168 -> return getErrorRedirect(currentPath, error.message, ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/stripe/server.ts::fn:createStripePortal",
+      "targetQualifiedName": "utils/helpers.ts::fn:getErrorRedirect",
+      "edgeType": "CALLS",
+      "callSiteLine": 174,
+      "evidence": "utils/stripe/server.ts:174 -> return getErrorRedirect(currentPath, 'An unknown error occurred.', ...)"
+    },
+    {
+      "sourceQualifiedName": "utils/stripe/server.ts::fn:createStripePortal",
+      "targetQualifiedName": "utils/helpers.ts::fn:getURL",
+      "edgeType": "CALLS",
+      "callSiteLine": 155,
+      "evidence": "utils/stripe/server.ts:155 -> return_url: getURL('/account') inside Stripe billingPortal.sessions.create() argument"
+    },
+    {
+      "sourceQualifiedName": "utils/stripe/server.ts::fn:createStripePortal",
+      "targetQualifiedName": "utils/supabase/admin.ts::fn:createOrRetrieveCustomer",
+      "edgeType": "CALLS",
+      "callSiteLine": 139,
+      "evidence": "utils/stripe/server.ts:139 -> customer = await createOrRetrieveCustomer({ uuid, email })"
+    },
+    {
+      "sourceQualifiedName": "utils/stripe/server.ts::fn:createStripePortal",
+      "targetQualifiedName": "utils/supabase/server.ts::fn:createClient",
+      "edgeType": "CALLS",
+      "callSiteLine": 124,
+      "evidence": "utils/stripe/server.ts:124 -> const supabase = createClient()"
+    }
+  ],
+  "excludedOrUncertainCandidates": [
+    {
+      "filePath": "app/page.tsx",
+      "line": 11,
+      "expression": "Promise.all([...])",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Promise.all"
+    },
+    {
+      "filePath": "app/api/webhooks/route.ts",
+      "line": 1,
+      "expression": "import Stripe from 'stripe'",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Stripe SDK package"
+    },
+    {
+      "filePath": "app/api/webhooks/route.ts",
+      "line": 11,
+      "expression": "new Set([...]) / relevantEvents.has(...)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Set constructor and Set.prototype.has (L11, L40)"
+    },
+    {
+      "filePath": "app/api/webhooks/route.ts",
+      "line": 25,
+      "expression": "req.text() / req.headers.get() / new Response() / new Error() / JSON.stringify()",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Web Fetch API & JS built-ins across L25-26, L32, L37, L79, L83, L91, L95"
+    },
+    {
+      "filePath": "app/api/webhooks/route.ts",
+      "line": 33,
+      "expression": "stripe.webhooks.constructEvent(body, sig, webhookSecret)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Stripe SDK method on stripe instance exported from utils/stripe/config.ts"
+    },
+    {
+      "filePath": "app/api/webhooks/route.ts",
+      "line": 34,
+      "expression": "console.log(...)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Console logging calls (L34, L36, L82)"
+    },
+    {
+      "filePath": "app/signin/[id]/page.tsx",
+      "line": 3,
+      "expression": "import { cookies } from 'next/headers'; import { redirect } from 'next/navigation'",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Next.js imports (L3-4)"
+    },
+    {
+      "filePath": "app/signin/[id]/page.tsx",
+      "line": 35,
+      "expression": "viewTypes.includes(params.id)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Array.prototype.includes"
+    },
+    {
+      "filePath": "app/signin/[id]/page.tsx",
+      "line": 39,
+      "expression": "cookies().get('preferredSignInView') / redirect(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Next.js cookies/redirect calls (L39, L41, L52, L54)"
+    },
+    {
+      "filePath": "app/signin/[id]/page.tsx",
+      "line": 49,
+      "expression": "supabase.auth.getUser()",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External @supabase/ssr client auth method"
+    },
+    {
+      "filePath": "app/signin/[id]/page.tsx",
+      "line": 58,
+      "expression": "<div> / <>",
+      "classification": "excluded",
+      "reason": "jsx_intrinsic",
+      "notes": "Intrinsic HTML div elements and JSX fragment (L58-60, L103)"
+    },
+    {
+      "filePath": "components/ui/Pricing/Pricing.tsx",
+      "line": 9,
+      "expression": "imports from '@supabase/supabase-js', 'classnames', 'next/navigation', 'react'",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External package imports (L9-12)"
+    },
+    {
+      "filePath": "components/ui/Pricing/Pricing.tsx",
+      "line": 36,
+      "expression": "Array.from / new Set / flatMap / map / includes / find / new Intl.NumberFormat().format()",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in JS/Intl methods across L36-42, L118, L131, L147-156"
+    },
+    {
+      "filePath": "components/ui/Pricing/Pricing.tsx",
+      "line": 43,
+      "expression": "useRouter() / useState() / usePathname() / router.push() / setPriceIdLoading() / setBillingInterval()",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External React/Next.js hooks and state setters across L43-47, L50-81, L120, L133"
+    },
+    {
+      "filePath": "components/ui/Pricing/Pricing.tsx",
+      "line": 79,
+      "expression": "stripe?.redirectToCheckout({ sessionId })",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External @stripe/stripe-js method"
+    },
+    {
+      "filePath": "components/ui/Pricing/Pricing.tsx",
+      "line": 86,
+      "expression": "<section> / <div> / <p> / <a> / <h1> / <button> / <h2> / <span>",
+      "classification": "excluded",
+      "reason": "jsx_intrinsic",
+      "notes": "Intrinsic HTML elements throughout Pricing render branches"
+    },
+    {
+      "filePath": "components/ui/Pricing/Pricing.tsx",
+      "line": 160,
+      "expression": "cn(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External classnames default export"
+    },
+    {
+      "filePath": "components/ui/Pricing/Pricing.tsx",
+      "line": 189,
+      "expression": "handleStripeCheckout(price)",
+      "classification": "excluded",
+      "reason": "other",
+      "notes": "Unmapped nested local arrow variable declared inside Pricing at L49"
+    },
+    {
+      "filePath": "components/ui/Button/Button.tsx",
+      "line": 3,
+      "expression": "imports from 'classnames', 'react', 'react-merge-refs'",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External package imports (L3-5)"
+    },
+    {
+      "filePath": "components/ui/Button/Button.tsx",
+      "line": 9,
+      "expression": "import styles from './Button.module.css'",
+      "classification": "excluded",
+      "reason": "other",
+      "notes": "Unsupported CSS Module asset import"
+    },
+    {
+      "filePath": "components/ui/Button/Button.tsx",
+      "line": 19,
+      "expression": "forwardRef(...) / useRef(null)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External React HOC/hook calls (L19, L32)"
+    },
+    {
+      "filePath": "components/ui/Button/Button.tsx",
+      "line": 33,
+      "expression": "cn(...) / mergeRefs(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External classnames and react-merge-refs calls (L33, L46)"
+    },
+    {
+      "filePath": "components/ui/Button/Button.tsx",
+      "line": 43,
+      "expression": "<Component ...>",
+      "classification": "excluded",
+      "reason": "hof_parameter",
+      "notes": "Polymorphic Component prop defaulted to intrinsic 'button' (not a concrete internal declaration)"
+    },
+    {
+      "filePath": "components/ui/Button/Button.tsx",
+      "line": 57,
+      "expression": "<i className=\"flex pl-2 m-0\">",
+      "classification": "excluded",
+      "reason": "jsx_intrinsic",
+      "notes": "Intrinsic HTML i element"
+    },
+    {
+      "filePath": "utils/auth-helpers/server.ts",
+      "line": 4,
+      "expression": "import { cookies } from 'next/headers'; import { redirect } from 'next/navigation'",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Next.js imports (L4-5)"
+    },
+    {
+      "filePath": "utils/auth-helpers/server.ts",
+      "line": 11,
+      "expression": "regex.test(email)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in RegExp.prototype.test"
+    },
+    {
+      "filePath": "utils/auth-helpers/server.ts",
+      "line": 15,
+      "expression": "redirect(path)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Next.js redirect()"
+    },
+    {
+      "filePath": "utils/auth-helpers/server.ts",
+      "line": 19,
+      "expression": "String(formData.get(...)).trim()",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in String/FormData/trim calls across L19, L39, L93, L136-137, L169-170, L226-227, L269, L310"
+    },
+    {
+      "filePath": "utils/auth-helpers/server.ts",
+      "line": 22,
+      "expression": "supabase.auth.{signOut,signInWithOtp,resetPasswordForEmail,signInWithPassword,signUp,updateUser}",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Supabase auth SDK calls across L22, L59, L106, L141, L182, L240, L286, L313"
+    },
+    {
+      "filePath": "utils/auth-helpers/server.ts",
+      "line": 36,
+      "expression": "cookies() / cookieStore.set(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Next.js cookies helper and store mutation (L36, L71, L135, L153)"
+    },
+    {
+      "filePath": "utils/supabase/queries.ts",
+      "line": 1,
+      "expression": "import { SupabaseClient } from '@supabase/supabase-js'; import { cache } from 'react'",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External package imports (L1-2)"
+    },
+    {
+      "filePath": "utils/supabase/queries.ts",
+      "line": 4,
+      "expression": "cache(async (...) => ...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External React cache() wrapper calls (L4, L11, L21, L33)"
+    },
+    {
+      "filePath": "utils/supabase/queries.ts",
+      "line": 7,
+      "expression": "supabase.auth.getUser() / supabase.from(...).select(...)...",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External SupabaseClient SDK method chains (L7, L12-16, L22-28, L34-37)"
+    },
+    {
+      "filePath": "utils/stripe/server.ts",
+      "line": 3,
+      "expression": "import Stripe from 'stripe'",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Stripe SDK package"
+    },
+    {
+      "filePath": "utils/stripe/server.ts",
+      "line": 31,
+      "expression": "supabase.auth.getUser()",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Supabase auth SDK method (L31, L128)"
+    },
+    {
+      "filePath": "utils/stripe/server.ts",
+      "line": 34,
+      "expression": "console.error(...) / console.log(...)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Console logging calls (L34, L46, L67, L91, L132, L144, L162, L167)"
+    },
+    {
+      "filePath": "utils/stripe/server.ts",
+      "line": 35,
+      "expression": "new Error(...)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Error constructor (L35, L47, L92, L99, L134, L145, L149, L158, L163)"
+    },
+    {
+      "filePath": "utils/stripe/server.ts",
+      "line": 89,
+      "expression": "stripe.checkout.sessions.create(params)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Stripe SDK checkout session creation"
+    },
+    {
+      "filePath": "utils/stripe/server.ts",
+      "line": 153,
+      "expression": "stripe.billingPortal.sessions.create({...})",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Stripe SDK billing portal creation"
+    },
+    {
+      "filePath": "utils/helpers.ts",
+      "line": 9,
+      "expression": "trim() / replace() / includes()",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in String prototype methods (L9, L13, L19, L21, L23)"
+    },
+    {
+      "filePath": "utils/helpers.ts",
+      "line": 36,
+      "expression": "fetch() / new Headers() / JSON.stringify() / res.json()",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Web Fetch API & JSON built-ins (L36, L38, L40, L43)"
+    },
+    {
+      "filePath": "utils/helpers.ts",
+      "line": 47,
+      "expression": "new Date() / t.setSeconds() / currentDate.getTime() / trialEnd.getTime()",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Date constructor & methods (L47-48, L64-66, L68)"
+    },
+    {
+      "filePath": "utils/helpers.ts",
+      "line": 68,
+      "expression": "Math.floor(...)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Math.floor"
+    },
+    {
+      "filePath": "utils/helpers.ts",
+      "line": 86,
+      "expression": "encodeURIComponent(...)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in encodeURIComponent (L86, L89)"
+    }
+  ],
+  "notes": [
+    "Blind annotation completed from pinned nextjs-subscription-payments-sources.json blobs prior to any Archon analysis run.",
+    "The 44 excludedOrUncertainCandidates entries are grouped supplementary records summarizing out-of-scope calls/imports rather than an exhaustive per-expression count.",
+    "types_db.ts is committed as UTF-16LE with BOM (19536 bytes) in the pinned snapshot; static imports targeting '@/types_db' remain included in expectedImports as genuine internal TypeScript imports.",
+    "utils/supabase/queries.ts wraps getUser, getSubscription, getProducts, and getUserDetails in React cache(...), so their emitted identities under Archon's node specification are ::sym:<name>; calls in app/page.tsx remain included in expectedCalls as genuine internal calls.",
+    "Zero uncertain candidates declared across the 10 selected files; frozen SHA-256 digest is recorded externally after Prettier formatting and independent review."
+  ]
+}

@@ -1,5 +1,6 @@
 import { lstat, open, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { TextDecoder } from 'node:util';
 import { isRepoConfigPath, isSupportedSourcePath, normalizePosixPath } from '@archon/shared';
 import { CoreAnalysisError } from './errors.js';
 import {
@@ -14,6 +15,8 @@ import {
 
 const WINDOWS_DRIVE_RE = /^[a-zA-Z]:/;
 const MAX_READ_CHUNK_BYTES = 64 * 1024;
+const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+const UTF16LE_FATAL_DECODER = new TextDecoder('utf-16le', { fatal: true, ignoreBOM: true });
 const IGNORED_WALK_DIRS = new Set([
   'node_modules',
   'dist',
@@ -113,6 +116,102 @@ export function truncateWarningMessage(message: string): string {
     return message;
   }
   return `${message.slice(0, MAX_WARNING_MESSAGE_CHARS - 3)}...`;
+}
+
+export type DecodedSourceEncoding = 'utf-8' | 'utf-8-bom' | 'utf-16le-bom' | 'utf-16be-bom';
+
+export type DecodeSourceBufferResult =
+  | {
+      readonly ok: true;
+      readonly content: string;
+      readonly encoding: DecodedSourceEncoding;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: string;
+    };
+
+/**
+ * Decodes raw source-file bytes using explicit BOM detection (UTF-8 BOM, UTF-16LE BOM,
+ * UTF-16BE BOM) or strict UTF-8 without heuristic binary/encoding guessing.
+ * Rejects truncated byte sequences, unpaired UTF-16 surrogates, invalid UTF-8 bytes,
+ * and unsupported UTF-32 BOMs rather than silently repairing corrupted text.
+ */
+export function decodeSourceBuffer(rawBuffer: Buffer): DecodeSourceBufferResult {
+  // Reject UTF-32LE BOM (FF FE 00 00) before UTF-16LE prefix check
+  if (
+    rawBuffer.byteLength >= 4 &&
+    rawBuffer[0] === 0xff &&
+    rawBuffer[1] === 0xfe &&
+    rawBuffer[2] === 0x00 &&
+    rawBuffer[3] === 0x00
+  ) {
+    return { ok: false, reason: 'Unsupported UTF-32LE BOM encoding.' };
+  }
+
+  // Reject UTF-32BE BOM (00 00 FE FF)
+  if (
+    rawBuffer.byteLength >= 4 &&
+    rawBuffer[0] === 0x00 &&
+    rawBuffer[1] === 0x00 &&
+    rawBuffer[2] === 0xfe &&
+    rawBuffer[3] === 0xff
+  ) {
+    return { ok: false, reason: 'Unsupported UTF-32BE BOM encoding.' };
+  }
+
+  // UTF-8 BOM (EF BB BF)
+  if (
+    rawBuffer.byteLength >= 3 &&
+    rawBuffer[0] === 0xef &&
+    rawBuffer[1] === 0xbb &&
+    rawBuffer[2] === 0xbf
+  ) {
+    try {
+      const content = UTF8_FATAL_DECODER.decode(rawBuffer.subarray(3));
+      return { ok: true, content, encoding: 'utf-8-bom' };
+    } catch {
+      return { ok: false, reason: 'Malformed or truncated UTF-8 byte sequence after BOM.' };
+    }
+  }
+
+  // UTF-16LE BOM (FF FE)
+  if (rawBuffer.byteLength >= 2 && rawBuffer[0] === 0xff && rawBuffer[1] === 0xfe) {
+    const payload = rawBuffer.subarray(2);
+    if (payload.byteLength % 2 !== 0) {
+      return { ok: false, reason: 'Truncated UTF-16LE byte sequence (odd payload byte length).' };
+    }
+    try {
+      const content = UTF16LE_FATAL_DECODER.decode(payload);
+      return { ok: true, content, encoding: 'utf-16le-bom' };
+    } catch {
+      return { ok: false, reason: 'Malformed UTF-16LE surrogate sequence.' };
+    }
+  }
+
+  // UTF-16BE BOM (FE FF)
+  if (rawBuffer.byteLength >= 2 && rawBuffer[0] === 0xfe && rawBuffer[1] === 0xff) {
+    const payload = rawBuffer.subarray(2);
+    if (payload.byteLength % 2 !== 0) {
+      return { ok: false, reason: 'Truncated UTF-16BE byte sequence (odd payload byte length).' };
+    }
+    try {
+      const swapped = Buffer.from(payload);
+      swapped.swap16();
+      const content = UTF16LE_FATAL_DECODER.decode(swapped);
+      return { ok: true, content, encoding: 'utf-16be-bom' };
+    } catch {
+      return { ok: false, reason: 'Malformed UTF-16BE surrogate sequence.' };
+    }
+  }
+
+  // Ordinary BOM-less UTF-8 (strict — no heuristic encoding detection for binary files)
+  try {
+    const content = UTF8_FATAL_DECODER.decode(rawBuffer);
+    return { ok: true, content, encoding: 'utf-8' };
+  } catch {
+    return { ok: false, reason: 'Malformed or truncated UTF-8 byte sequence.' };
+  }
 }
 
 /**
@@ -550,6 +649,24 @@ export async function discoverWorkspaceFiles(
           totalBytesRead: readStats.totalBytesRead,
         },
       });
+    }
+
+    if (kind === 'source') {
+      const decoded = decodeSourceBuffer(readResult.buffer);
+      if (!decoded.ok) {
+        pushWarning({
+          code: 'UNREADABLE_FILE',
+          filePath: relPosixPath,
+          message: `Skipped source file "${relPosixPath}" due to invalid or unsupported text encoding: ${decoded.reason}`,
+        });
+        return null;
+      }
+
+      return {
+        relativePath: relPosixPath,
+        content: decoded.content,
+        byteLength: readResult.buffer.byteLength,
+      };
     }
 
     return {

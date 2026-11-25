@@ -1,6 +1,11 @@
+import {
+  compareExtractedEdges,
+  extractCallEdges,
+  validateMaxCallSiteSnippetChars,
+} from './calls-extractor.js';
 import { discoverWorkspaceFiles, truncateWarningMessage } from './discovery.js';
 import { extractImportEdges } from './imports-extractor.js';
-import { extractNodesFromFiles } from './node-extractor.js';
+import { extractNodesWithIndex } from './node-extractor.js';
 import { createAnalysisProject } from './project.js';
 import { loadWorkspaceTsConfigs } from './tsconfig-loader.js';
 import {
@@ -12,10 +17,11 @@ import {
 } from './types.js';
 
 /**
- * Pure deterministic static analysis entrypoint (Step 4.2a: nodes + IMPORTS edges).
- * Step 4.2b extends this pipeline with CALLS extraction on the same in-memory Project.
+ * Pure deterministic static analysis entrypoint: extracts nodes, `IMPORTS`, and `CALLS`
+ * edges from a single isolated in-memory `ts-morph` Project and shared `WorkspaceModuleResolver`.
  */
 export async function analyzeRepository(input: AnalysisInput): Promise<AnalysisOutput> {
+  const maxCallSiteSnippetChars = validateMaxCallSiteSnippetChars(input.maxCallSiteSnippetChars);
   const maxWarnings = input.maxWarnings ?? DEFAULT_MAX_WARNINGS;
 
   const discovered = await discoverWorkspaceFiles({
@@ -39,16 +45,24 @@ export async function analyzeRepository(input: AnalysisInput): Promise<AnalysisO
     skipLoadingLibFiles: input.skipLoadingLibFiles ?? false,
   });
 
-  const nodes = extractNodesFromFiles({
+  const { nodes, declarationIndex } = extractNodesWithIndex({
     parsedFiles: projectContext.parsedFiles,
     maxFileSnippetChars: input.maxFileSnippetChars,
     maxSymbolSnippetChars: input.maxSymbolSnippetChars,
   });
 
-  const edges = extractImportEdges({
+  const importEdges = extractImportEdges({
     parsedFiles: projectContext.parsedFiles,
     resolver: projectContext.resolver,
   });
+
+  const callEdges = extractCallEdges({
+    projectContext,
+    declarationIndex,
+    maxCallSiteSnippetChars,
+  });
+
+  const edges = [...importEdges, ...callEdges].sort(compareExtractedEdges);
 
   // Merge and cap warnings deterministically
   const combinedWarnings: AnalysisWarning[] = [...discovered.warnings];
@@ -106,8 +120,8 @@ export async function analyzeRepository(input: AnalysisInput): Promise<AnalysisO
       functionNodeCount,
       classNodeCount,
       symbolNodeCount,
-      importsEdgeCount: edges.length,
-      callsEdgeCount: 0,
+      importsEdgeCount: importEdges.length,
+      callsEdgeCount: callEdges.length,
       totalBytesRead: discovered.totalBytesRead,
       truncatedWarningsCount,
     },

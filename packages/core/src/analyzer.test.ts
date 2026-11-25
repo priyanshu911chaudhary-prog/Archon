@@ -1,9 +1,9 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { DEFAULT_MAX_CALL_SITE_SNIPPET_CHARS, type AnalysisOutput } from './types.js';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { analyzeRepository } from './analyzer.js';
-import type { AnalysisOutput } from './types.js';
 
 async function createTempWorkspace(files: Readonly<Record<string, string>>): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'archon-core-fixture-'));
@@ -15,7 +15,11 @@ async function createTempWorkspace(files: Readonly<Record<string, string>>): Pro
   return dir;
 }
 
-function assertGraphIntegrity(output: AnalysisOutput, rootDir: string): void {
+function assertGraphIntegrity(
+  output: AnalysisOutput,
+  rootDir: string,
+  maxCallSiteSnippetChars = DEFAULT_MAX_CALL_SITE_SNIPPET_CHARS,
+): void {
   const nodeMap = new Map(output.nodes.map((n) => [n.qualifiedName, n]));
   // Unique qualified names
   expect(nodeMap.size).toBe(output.nodes.length);
@@ -33,7 +37,11 @@ function assertGraphIntegrity(output: AnalysisOutput, rootDir: string): void {
     expect(node.qualifiedName).not.toContain(rootDir);
   }
 
-  // Every emitted edge references two existing nodes
+  let importsCount = 0;
+  let callsCount = 0;
+  const seenEdgeKeys = new Set<string>();
+
+  // Every emitted edge references two existing nodes with valid edge-type metadata
   for (const edge of output.edges) {
     expect(
       nodeMap.has(edge.sourceQualifiedName),
@@ -43,10 +51,35 @@ function assertGraphIntegrity(output: AnalysisOutput, rootDir: string): void {
       nodeMap.has(edge.targetQualifiedName),
       `Missing target ${edge.targetQualifiedName}`,
     ).toBe(true);
-    expect(edge.edgeType).toBe('IMPORTS');
-    expect(edge.callSiteLine).toBeNull();
-    expect(edge.callSiteSnippet).toBeNull();
+
+    if (edge.edgeType === 'IMPORTS') {
+      importsCount += 1;
+      expect(edge.sourceQualifiedName).not.toBe(edge.targetQualifiedName);
+      expect(edge.callSiteLine).toBeNull();
+      expect(edge.callSiteSnippet).toBeNull();
+      const key = `${edge.sourceQualifiedName}\0${edge.targetQualifiedName}\0IMPORTS`;
+      expect(seenEdgeKeys.has(key), `Duplicate IMPORTS edge ${key}`).toBe(false);
+      seenEdgeKeys.add(key);
+    } else {
+      callsCount += 1;
+      expect(edge.callSiteLine).not.toBeNull();
+      if (edge.callSiteLine !== null) {
+        expect(Number.isInteger(edge.callSiteLine)).toBe(true);
+        expect(edge.callSiteLine).toBeGreaterThanOrEqual(1);
+      }
+      expect(edge.callSiteSnippet).not.toBeNull();
+      if (edge.callSiteSnippet !== null) {
+        expect(edge.callSiteSnippet.length).toBeLessThanOrEqual(maxCallSiteSnippetChars);
+        expect(edge.callSiteSnippet).not.toContain('\r');
+      }
+      const key = `${edge.sourceQualifiedName}\0${edge.targetQualifiedName}\0CALLS\0${edge.callSiteLine}`;
+      expect(seenEdgeKeys.has(key), `Duplicate CALLS edge ${key}`).toBe(false);
+      seenEdgeKeys.add(key);
+    }
   }
+
+  expect(output.stats.importsEdgeCount).toBe(importsCount);
+  expect(output.stats.callsEdgeCount).toBe(callsCount);
 
   // No host temp paths leaked in warnings
   for (const warning of output.warnings) {
@@ -685,5 +718,104 @@ describe('analyzeRepository (Step 4.2a static analysis foundation)', () => {
         .filter((e) => e.sourceQualifiedName === 'file:src/app.ts')
         .map((e) => e.targetQualifiedName),
     ).toEqual(['file:src/lib/core.ts']);
+  });
+  it('parses UTF-16LE BOM, UTF-16BE BOM, and UTF-8 BOM modules end-to-end with incoming IMPORTS, CALLS, accurate line numbers, and raw-byte stats', async () => {
+    const rootDir = await makeFixture({});
+    const utf16LeSource = [
+      'export type RecordRow = {',
+      '  id: string;',
+      '};',
+      'export function formatRow(row: RecordRow): string {',
+      '  return row.id;',
+      '}',
+    ].join('\r\n');
+    const utf16LeBytes = Buffer.concat([
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from(`${utf16LeSource}\r\n`, 'utf16le'),
+    ]);
+
+    const utf16BeSource = [
+      'export function tagLabel(value: string): string {',
+      '  return `[${value}]`;',
+      '}',
+    ].join('\n');
+    const utf16BePayload = Buffer.from(`${utf16BeSource}\n`, 'utf16le');
+    utf16BePayload.swap16();
+    const utf16BeBytes = Buffer.concat([Buffer.from([0xfe, 0xff]), utf16BePayload]);
+
+    const utf8BomSource = [
+      "import { formatRow, type RecordRow } from '@/types_db';",
+      "import { tagLabel } from './be-helper';",
+      'export function renderRow(row: RecordRow): string {',
+      '  const formatted = formatRow(row);',
+      '  return tagLabel(formatted);',
+      '}',
+    ].join('\n');
+    const utf8BomBytes = Buffer.concat([
+      Buffer.from([0xef, 0xbb, 0xbf]),
+      Buffer.from(`${utf8BomSource}\n`, 'utf8'),
+    ]);
+
+    const tsconfigBytes = Buffer.from(
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: '.',
+          paths: { '@/*': ['./*'] },
+        },
+      }),
+      'utf8',
+    );
+
+    await mkdir(path.join(rootDir, 'src'), { recursive: true });
+    await writeFile(path.join(rootDir, 'tsconfig.json'), tsconfigBytes);
+    await writeFile(path.join(rootDir, 'types_db.ts'), utf16LeBytes);
+    await writeFile(path.join(rootDir, 'src', 'be-helper.ts'), utf16BeBytes);
+    await writeFile(path.join(rootDir, 'src', 'consumer.ts'), utf8BomBytes);
+
+    const output = await analyzeRepository({ rootDir, skipLoadingLibFiles: true });
+    assertGraphIntegrity(output, rootDir);
+
+    expect(output.warnings).toEqual([]);
+    expect(output.stats.discoveredFilesCount).toBe(3);
+    expect(output.stats.parsedFilesCount).toBe(3);
+    expect(output.stats.skippedSyntaxErrorFilesCount).toBe(0);
+    expect(output.stats.totalBytesRead).toBe(
+      tsconfigBytes.byteLength +
+        utf16LeBytes.byteLength +
+        utf16BeBytes.byteLength +
+        utf8BomBytes.byteLength,
+    );
+
+    // Incoming IMPORTS edges to both UTF-16LE BOM and UTF-16BE BOM modules
+    const importEdges = output.edges
+      .filter((e) => e.edgeType === 'IMPORTS')
+      .map((e) => `${e.sourceQualifiedName} -> ${e.targetQualifiedName}`);
+    expect(importEdges).toEqual([
+      'file:src/consumer.ts -> file:src/be-helper.ts',
+      'file:src/consumer.ts -> file:types_db.ts',
+    ]);
+
+    // CALLS edges with exact 1-indexed decoded line numbers and BOM/CR-free snippets
+    const callEdges = output.edges.filter((e) => e.edgeType === 'CALLS');
+    expect(
+      callEdges.map(
+        (e) => `${e.sourceQualifiedName} -> ${e.targetQualifiedName} @L${String(e.callSiteLine)}`,
+      ),
+    ).toEqual([
+      'src/consumer.ts::fn:renderRow -> src/be-helper.ts::fn:tagLabel @L5',
+      'src/consumer.ts::fn:renderRow -> types_db.ts::fn:formatRow @L4',
+    ]);
+    for (const edge of callEdges) {
+      expect(edge.callSiteSnippet).not.toContain('\r');
+      expect(edge.callSiteSnippet).not.toContain('\uFEFF');
+    }
+
+    // Decoded line numbers and clean snippets on the UTF-16LE BOM file's extracted nodes
+    const formatRowNode = output.nodes.find((n) => n.qualifiedName === 'types_db.ts::fn:formatRow');
+    expect(formatRowNode?.startLine).toBe(4);
+    expect(formatRowNode?.endLine).toBe(6);
+    expect(formatRowNode?.snippet).toContain('export function formatRow');
+    expect(formatRowNode?.snippet).not.toContain('\r');
+    expect(formatRowNode?.snippet).not.toContain('\uFEFF');
   });
 });
