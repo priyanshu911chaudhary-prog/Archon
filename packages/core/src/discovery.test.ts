@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  decodeSourceBuffer,
   discoverWorkspaceFiles,
   validateRepoRelativePath,
   type ReadableFileHandle,
@@ -371,5 +372,155 @@ describe('discoverWorkspaceFiles and validateRepoRelativePath', () => {
     expect(partialOverflow.readMetrics.totalActualBytesRead).toBe(10);
     expect(partialOverflow.readMetrics.maxSingleReadRequest).toBeLessThanOrEqual(10);
     expect(partialOverflow.closedBasenames).toEqual(['p1.ts']);
+  });
+  it('decodes ordinary UTF-8, UTF-8 BOM, UTF-16LE BOM, and UTF-16BE BOM source buffers while stripping BOMs', () => {
+    const sampleText = "export const label = 'café 🚀';\r\nexport const n = 1;\r\n";
+
+    // 1. Ordinary UTF-8 baseline control
+    const utf8Buf = Buffer.from(sampleText, 'utf8');
+    expect(decodeSourceBuffer(utf8Buf)).toEqual({
+      ok: true,
+      content: sampleText,
+      encoding: 'utf-8',
+    });
+
+    // 2. UTF-8 BOM
+    const utf8BomBuf = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), utf8Buf]);
+    const utf8BomRes = decodeSourceBuffer(utf8BomBuf);
+    expect(utf8BomRes).toEqual({
+      ok: true,
+      content: sampleText,
+      encoding: 'utf-8-bom',
+    });
+    expect(utf8BomRes.ok && utf8BomRes.content.startsWith('\uFEFF')).toBe(false);
+
+    // 3. UTF-16LE BOM
+    const utf16LePayload = Buffer.from(sampleText, 'utf16le');
+    const utf16LeBuf = Buffer.concat([Buffer.from([0xff, 0xfe]), utf16LePayload]);
+    const utf16LeRes = decodeSourceBuffer(utf16LeBuf);
+    expect(utf16LeRes).toEqual({
+      ok: true,
+      content: sampleText,
+      encoding: 'utf-16le-bom',
+    });
+
+    // 4. UTF-16BE BOM (swap 16-bit code units of UTF-16LE payload)
+    const utf16BePayload = Buffer.from(utf16LePayload);
+    utf16BePayload.swap16();
+    const utf16BeBuf = Buffer.concat([Buffer.from([0xfe, 0xff]), utf16BePayload]);
+    const utf16BeRes = decodeSourceBuffer(utf16BeBuf);
+    expect(utf16BeRes).toEqual({
+      ok: true,
+      content: sampleText,
+      encoding: 'utf-16be-bom',
+    });
+    // Ensure input buffer was not mutated by swap16
+    expect(utf16BeBuf.subarray(2).equals(utf16BePayload)).toBe(true);
+  });
+
+  it('rejects malformed, truncated, unpaired-surrogate, and unsupported-BOM inputs without silently repairing text and preserves actual-byte accounting', async () => {
+    const invalidCases: readonly { readonly name: string; readonly bytes: Buffer }[] = [
+      { name: 'trunc-utf16le.ts', bytes: Buffer.from([0xff, 0xfe, 0x65]) }, // odd payload
+      { name: 'trunc-utf16be.ts', bytes: Buffer.from([0xfe, 0xff, 0x00]) }, // odd payload
+      { name: 'lone-surrogate-le.ts', bytes: Buffer.from([0xff, 0xfe, 0x3d, 0xd8]) }, // lone high surrogate U+D83D
+      { name: 'lone-surrogate-be.ts', bytes: Buffer.from([0xfe, 0xff, 0xd8, 0x3d]) }, // lone high surrogate U+D83D
+      { name: 'bad-utf8-bom.ts', bytes: Buffer.from([0xef, 0xbb, 0xbf, 0xc3]) }, // truncated UTF-8 after BOM
+      { name: 'bad-utf8-raw.ts', bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe]) }, // BOM-less binary bytes
+      {
+        name: 'utf32le.ts',
+        bytes: Buffer.from([0xff, 0xfe, 0x00, 0x00, 0x61, 0x00, 0x00, 0x00]),
+      },
+      {
+        name: 'utf32be.ts',
+        bytes: Buffer.from([0x00, 0x00, 0xfe, 0xff, 0x00, 0x00, 0x00, 0x61]),
+      },
+    ];
+
+    await mkdir(path.join(rootDir, 'src'), { recursive: true });
+    let expectedRawBytes = 0;
+
+    for (const testCase of invalidCases) {
+      expect(decodeSourceBuffer(testCase.bytes).ok, `Expected failure for ${testCase.name}`).toBe(
+        false,
+      );
+      await writeFile(path.join(rootDir, 'src', testCase.name), testCase.bytes);
+      expectedRawBytes += testCase.bytes.byteLength;
+    }
+
+    const validContent = 'export const ok = 1;\n';
+    const validBuf = Buffer.from(validContent, 'utf8');
+    await writeFile(path.join(rootDir, 'src', 'valid.ts'), validBuf);
+    expectedRawBytes += validBuf.byteLength;
+
+    const instrumented = createInstrumentedFsAdapter();
+    const discovered = await discoverWorkspaceFiles({
+      rootDir,
+      fsAdapter: instrumented.adapter,
+    });
+
+    // Only valid.ts enters sourceFiles; malformed files are never emitted with repaired text
+    expect(discovered.sourceFiles.map((f) => f.relativePath)).toEqual(['src/valid.ts']);
+    expect(discovered.warnings).toHaveLength(invalidCases.length);
+    for (const warning of discovered.warnings) {
+      expect(warning.code).toBe('UNREADABLE_FILE');
+    }
+    // Every raw byte read from malformed files is still accounted for in totalBytesRead
+    expect(discovered.totalBytesRead).toBe(expectedRawBytes);
+    expect(instrumented.readMetrics.totalActualBytesRead).toBe(expectedRawBytes);
+    expect(instrumented.closedBasenames).toEqual(instrumented.openedBasenames);
+  });
+
+  it('enforces raw byte limits, single-read semantics, and partial reads accurately on UTF-16LE BOM files', async () => {
+    await mkdir(path.join(rootDir, 'src'), { recursive: true });
+    const text = 'export const a = 1;\n'; // 20 ASCII chars -> 2 + 40 = 42 raw UTF-16LE BOM bytes
+    const rawUtf16Le = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
+    expect(rawUtf16Le.byteLength).toBe(42);
+    await writeFile(path.join(rootDir, 'src', 'utf16.ts'), rawUtf16Le);
+
+    // Exact raw-byte fit with partial reads (7 bytes per chunk) -> decoded cleanly in one open/close
+    const exactFit = createInstrumentedFsAdapter({ maxBytesPerRead: 7 });
+    const discovered = await discoverWorkspaceFiles({
+      rootDir,
+      maxFileBytes: 42,
+      maxTotalBytes: 42,
+      fsAdapter: exactFit.adapter,
+    });
+    expect(discovered.sourceFiles).toEqual([
+      {
+        relativePath: 'src/utf16.ts',
+        content: text,
+        byteLength: 42, // raw file bytes, NOT decoded char length (20)
+      },
+    ]);
+    expect(discovered.totalBytesRead).toBe(42);
+    expect(exactFit.readMetrics.totalActualBytesRead).toBe(42);
+    expect(exactFit.openedBasenames).toEqual(['utf16.ts']);
+    expect(exactFit.closedBasenames).toEqual(['utf16.ts']);
+
+    // Per-file limit of 41 (< 42 raw bytes, even though > 20 decoded chars) rejects from metadata with 0 reads
+    const perFileTight = createInstrumentedFsAdapter();
+    const skipped = await discoverWorkspaceFiles({
+      rootDir,
+      maxFileBytes: 41,
+      maxTotalBytes: 100,
+      fsAdapter: perFileTight.adapter,
+    });
+    expect(skipped.sourceFiles).toEqual([]);
+    expect(skipped.skippedOversizedFilesCount).toBe(1);
+    expect(skipped.totalBytesRead).toBe(0);
+    expect(perFileTight.openedBasenames).toEqual([]);
+
+    // Global limit of 41 (< 42 raw bytes) trips SIZE_LIMIT_EXCEEDED without exceeding 41 bytes read
+    const globalTight = createInstrumentedFsAdapter({ maxBytesPerRead: 7 });
+    await expect(
+      discoverWorkspaceFiles({
+        rootDir,
+        maxFileBytes: 100,
+        maxTotalBytes: 41,
+        fsAdapter: globalTight.adapter,
+      }),
+    ).rejects.toMatchObject({ code: 'SIZE_LIMIT_EXCEEDED' });
+    expect(globalTight.readMetrics.totalActualBytesRead).toBeLessThanOrEqual(41);
+    expect(globalTight.closedBasenames).toEqual(globalTight.openedBasenames);
   });
 });

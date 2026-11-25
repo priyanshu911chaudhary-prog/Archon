@@ -85,6 +85,8 @@ export interface AnalysisInput {
   readonly maxFileSnippetChars?: number;
   /** Default 4,096 chars for function/class/symbol snippets. */
   readonly maxSymbolSnippetChars?: number;
+  /** Default 512 chars for CALLS call-site context snippets. */
+  readonly maxCallSiteSnippetChars?: number;
   /** Default 200 bounded warnings retained in output. */
   readonly maxWarnings?: number;
   /** Default 10 max tsconfig extends chain depth. */
@@ -109,6 +111,7 @@ export const DEFAULT_MAX_FILE_BYTES = 1024 * 1024; // 1 MiB
 export const DEFAULT_MAX_TOTAL_BYTES = 50 * 1024 * 1024; // 50 MiB
 export const DEFAULT_MAX_FILE_SNIPPET_CHARS = 8192;
 export const DEFAULT_MAX_SYMBOL_SNIPPET_CHARS = 4096;
+export const DEFAULT_MAX_CALL_SITE_SNIPPET_CHARS = 512;
 export const DEFAULT_MAX_WARNINGS = 200;
 export const DEFAULT_MAX_EXTENDS_DEPTH = 10;
 export const MAX_WARNING_MESSAGE_CHARS = 300;

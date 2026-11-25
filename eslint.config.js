@@ -27,7 +27,7 @@ export default defineConfig([
 
   {
     name: 'archon/workspace-ts-strict',
-    files: ['apps/**/*.{ts,tsx}', 'packages/**/*.{ts,tsx}'],
+    files: ['apps/**/*.{ts,tsx}', 'packages/**/*.{ts,tsx}', 'scripts/**/*.ts'],
     ignores: ['**/*.config.{ts,mts,cts}'],
     extends: [
       js.configs.recommended,

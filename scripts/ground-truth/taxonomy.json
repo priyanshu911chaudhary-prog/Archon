@@ -1,0 +1,1082 @@
+{
+  "schemaVersion": 1,
+  "repository": "shadcn-ui/taxonomy",
+  "commitSha": "298a8857c7128a0d121e7f699dfd729f23b3966d",
+  "annotationMethod": "ai-assisted-blind-source-review-pending-independent-review",
+  "samplingRationale": "Purposive 10-of-129-file sample selected blind from the source inventory prior to running Archon, covering Next.js App Router pages and API routes with route-group parentheses and dynamic brackets (app/(dashboard)/dashboard/page.tsx, app/api/posts/[postId]/route.ts, app/(editor)/editor/[postId]/page.tsx), client UI and React forwardRef/cva components (components/post-operations.tsx, components/user-auth-form.tsx, components/ui/button.tsx), subscription and recursive callback-heavy utilities (lib/subscription.ts, lib/toc.ts, lib/utils.ts), and internal error classes (lib/exceptions.ts).",
+  "scoringPolicy": {
+    "importsIdentity": "sourceQualifiedName + targetQualifiedName + edgeType",
+    "callsIdentity": "sourceQualifiedName + targetQualifiedName + edgeType + callSiteLine",
+    "scopeFiltering": "Filter predicted edges by emitted ExtractedNode.filePath membership in selectedSourceFiles; declarations in unselected files remain eligible targets.",
+    "uncertainCandidatePolicy": "Uncertain candidates must be predeclared with exact file/line/reason and are reported separately if predicted; zero uncertain candidates and zero callable-wrapper extension cases were identified in this sample.",
+    "zeroDenominatorPolicy": "Report precision, recall, and F1 as N/A when denominator is 0; never coerce to 100%."
+  },
+  "selectedSourceFiles": [
+    "app/(dashboard)/dashboard/page.tsx",
+    "app/api/posts/[postId]/route.ts",
+    "app/(editor)/editor/[postId]/page.tsx",
+    "components/post-operations.tsx",
+    "components/user-auth-form.tsx",
+    "components/ui/button.tsx",
+    "lib/subscription.ts",
+    "lib/toc.ts",
+    "lib/utils.ts",
+    "lib/exceptions.ts"
+  ],
+  "annotatedFileProvenance": [
+    {
+      "path": "app/(dashboard)/dashboard/page.tsx",
+      "status": "complete",
+      "gitBlobId": "5f4fc6edce1696561fcdbd0c4a0577c6b38ad555",
+      "sha256": "83d63d968b9726a31eb158e94d59022fb58a8966c87e71227502785fb54e43ea",
+      "byteLength": 1755
+    },
+    {
+      "path": "app/api/posts/[postId]/route.ts",
+      "status": "complete",
+      "gitBlobId": "061464056281c75e58fc7fbd3e0bf7caea33f14f",
+      "sha256": "0793f8b58bd592378756a6763caf791d336d3232a13ad157dfa56b14f5e1a2e3",
+      "byteLength": 2250
+    },
+    {
+      "path": "app/(editor)/editor/[postId]/page.tsx",
+      "status": "complete",
+      "gitBlobId": "784adda9934664d7009ed619839da8d8042daf50",
+      "sha256": "ece5c45660e8be5f58dae32d78ed2f3913d438131b80e9ac7d3a1b18681a6116",
+      "byteLength": 952
+    },
+    {
+      "path": "components/post-operations.tsx",
+      "status": "complete",
+      "gitBlobId": "9cdaa4a9399c11851477d70acb72655eb6e4d3e2",
+      "sha256": "bfd61c10c0608d4b0f93914e184e3d13e6cbcfec5ce110c02bfd5393978b0f4e",
+      "byteLength": 3441
+    },
+    {
+      "path": "components/user-auth-form.tsx",
+      "status": "complete",
+      "gitBlobId": "af745b3827473e70600f181d9de396f122b29411",
+      "sha256": "a9c57aadea8a169ad79f17e24d1d4790f0df0eb15e519434f62d1c4553bf31b8",
+      "byteLength": 3660
+    },
+    {
+      "path": "components/ui/button.tsx",
+      "status": "complete",
+      "gitBlobId": "89f2d3c0690107b62c44662a501f8b160d5a6e0e",
+      "sha256": "ca8d9484968d464e3779ac344132494f8a41084d74ece61e5b19ec86e73bb0ad",
+      "byteLength": 1648
+    },
+    {
+      "path": "lib/subscription.ts",
+      "status": "complete",
+      "gitBlobId": "703ac1ca06055c61d5646e97a2b2799b2cf5e86a",
+      "sha256": "72454a5a805080982af7f1905fa123a5bf4b3a3bbde51688d164819f56919eba",
+      "byteLength": 901
+    },
+    {
+      "path": "lib/toc.ts",
+      "status": "complete",
+      "gitBlobId": "46a005076cb77028a3897b6ffbd9f011885d0685",
+      "sha256": "7daa90dc7fcda3914b15e5fd4be2adeeebe6eba103c37cafd6d63fd157cf29ac",
+      "byteLength": 1529
+    },
+    {
+      "path": "lib/utils.ts",
+      "status": "complete",
+      "gitBlobId": "2d1675ac1e8e41a568006bf5d4f46721268a6d4a",
+      "sha256": "2376607088264f80a61abc1c3f1ab774904a38da0735b40e623549f8ec677c7c",
+      "byteLength": 490
+    },
+    {
+      "path": "lib/exceptions.ts",
+      "status": "complete",
+      "gitBlobId": "b07ce62982ba904692c73edda1225f7769a61dcb",
+      "sha256": "5e1c6470f7d1b5346605ac888bb1e14a5f03e16a8cbf7404df810f29b2d8b5dc",
+      "byteLength": 136
+    }
+  ],
+  "referencedTargetAndConfigProvenance": [
+    {
+      "path": "tsconfig.json",
+      "role": "config",
+      "gitBlobId": "e9ae1588d260560d28d737c34709f0dece2e47ac",
+      "sha256": "0d40046896eb570531d42ea01415c850fd07c239f321c830c3ae912c11f6285f",
+      "byteLength": 803
+    },
+    {
+      "path": "components/editor.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "a683e7504630cb922f05f120795057c232153abd",
+      "sha256": "aa7a82ca7d58849988432eeab4f590835ec3d85931ff682786e024274ea8151e",
+      "byteLength": 4920
+    },
+    {
+      "path": "components/empty-placeholder.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "717d44bb36b496e089842ff2a4ff6a5cee12a021",
+      "sha256": "9f49de2dad26a143f2891c8864b115f3605a5e61cf69e2d6ae917d00b744d1ab",
+      "byteLength": 1862
+    },
+    {
+      "path": "components/header.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "e8d1a436334a4bb260ce99b6c17196740ec03670",
+      "sha256": "ae7a9bbaa49f3ebe90fbace1ac6c51162379821d34dc4e1a73b3ea894dc098ea",
+      "byteLength": 492
+    },
+    {
+      "path": "components/icons.tsx",
+      "role": "unselected-import-target",
+      "gitBlobId": "37c1651ce56730c623bdcf748a9f8deb1319f209",
+      "sha256": "dd0d0a37e3472120326f1c47394e8c10e75656fa8c31dcb93f1d4a69c142bcb6",
+      "byteLength": 2489
+    },
+    {
+      "path": "components/post-create-button.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "94cbee4f7cbef052b648327869fceba266a83c3d",
+      "sha256": "cc4a6a42aac327a3b0c62ef91596f9262802ef0bfbcdea8b65bcc80edd0f6ef8",
+      "byteLength": 1847
+    },
+    {
+      "path": "components/post-item.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "3a6ad2828d0e5419847cd9354c7fe01a989b8faa",
+      "sha256": "f7dabb5aae41ab5801706d2ba7f641e2ae4bb53678edbcbb5a9017bfa53ffedf",
+      "byteLength": 1119
+    },
+    {
+      "path": "components/shell.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "ee95821c205ff2533a0ae917180fb6c4474a16f2",
+      "sha256": "030dfcd9f33cf1896c0ce117713fa37be8f9b53eae7e16bac991ebcfaea0cdd7",
+      "byteLength": 358
+    },
+    {
+      "path": "components/ui/alert-dialog.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "8e03ce529cecdb4d541b9c8444c8b6a57b8b7b68",
+      "sha256": "8fbcaf8a6fbf345dcb14a4268f16f931dd94e62842ca16f4b4528e43ebd0f499",
+      "byteLength": 4392
+    },
+    {
+      "path": "components/ui/dropdown-menu.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "c03f1a7cdd752737d5c615346628b182de60ab64",
+      "sha256": "5c21b2f867146cb9c1f4e28dbb63aa372f07ff2d417143f30104fdc208cb2dfd",
+      "byteLength": 6961
+    },
+    {
+      "path": "components/ui/input.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "929e05f50056bb69c128b4ac19fc3b83eed2c646",
+      "sha256": "5b2a8b6a60d53614a934e87cc4a18f5be22e690e2b1c9b6e5420a379a9c97b60",
+      "byteLength": 825
+    },
+    {
+      "path": "components/ui/label.tsx",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "b32881e640d0c9f8af1c91f7d965dfe07207628c",
+      "sha256": "7af39387f79f03f800a750e0a6866a1f2731e8f4a67178b55517849856143738",
+      "byteLength": 719
+    },
+    {
+      "path": "components/ui/use-toast.ts",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "c70c0d61949e822e1c5f2530d91aad64ded73d47",
+      "sha256": "c9df2eaa4484ee425665b0aeff5e6a0dc475557a4a11f6e8c9ca8a4f521dbe07",
+      "byteLength": 3936
+    },
+    {
+      "path": "config/subscriptions.ts",
+      "role": "unselected-import-target",
+      "gitBlobId": "235a95ac8bdfd6e591b5f42f8507889d93734297",
+      "sha256": "2ddee81955ab5aec25b504c4ae920085853313026c1c2f4541171c7e281093ed",
+      "byteLength": 429
+    },
+    {
+      "path": "env.mjs",
+      "role": "unselected-import-target",
+      "gitBlobId": "b3e960ab3b65349879dbf46c6a79ab51b13af6e0",
+      "sha256": "fba291a215fc35379094bfa1891d3c340d3daf50e97c9ad3609330d5215a737e",
+      "byteLength": 1674
+    },
+    {
+      "path": "lib/auth.ts",
+      "role": "unselected-import-target",
+      "gitBlobId": "f4fbd794b88e256b0193f2ffe5ea139deeacf71a",
+      "sha256": "0fa7deb8e367064023a369287e52929c1c8d93bce6669cbeb3bee53b8638e371",
+      "byteLength": 2783
+    },
+    {
+      "path": "lib/db.ts",
+      "role": "unselected-import-target",
+      "gitBlobId": "b772423e9fc200796340b7806728beeb92532640",
+      "sha256": "1b9e27bccbe712d0a6379e9cc618ea83ebd5a1528bf0271b9fa56a2a0e0c64d5",
+      "byteLength": 384
+    },
+    {
+      "path": "lib/session.ts",
+      "role": "unselected-import-and-call-target",
+      "gitBlobId": "d5705829178fe2bd0eff1643d858c7df9ac68ee9",
+      "sha256": "e46072a444981bfff7bb6aaf146c6daaa2d9a637d6e7b9c26da269abe52a676d",
+      "byteLength": 214
+    },
+    {
+      "path": "lib/validations/auth.ts",
+      "role": "unselected-import-target",
+      "gitBlobId": "b91e85aa575c469de1ff56eb63be35795a5f0fd7",
+      "sha256": "231930746602e4438e43630a2a8fa6bf759db3cb22dd68f84e6951a1c6da7c10",
+      "byteLength": 99
+    },
+    {
+      "path": "lib/validations/post.ts",
+      "role": "unselected-import-target",
+      "gitBlobId": "73ad1c60099cd000155e9979924014c9e2c38c80",
+      "sha256": "fee70388390a3e5a16934bc399ce45415ef9f18be1fbed561e16cd2d2088ceb0",
+      "byteLength": 208
+    }
+  ],
+  "expectedImports": [
+    {
+      "sourceQualifiedName": "file:app/(dashboard)/dashboard/page.tsx",
+      "targetQualifiedName": "file:components/empty-placeholder.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "app/(dashboard)/dashboard/page.tsx:6 -> import { EmptyPlaceholder } from \"@/components/empty-placeholder\""
+    },
+    {
+      "sourceQualifiedName": "file:app/(dashboard)/dashboard/page.tsx",
+      "targetQualifiedName": "file:components/header.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "app/(dashboard)/dashboard/page.tsx:7 -> import { DashboardHeader } from \"@/components/header\""
+    },
+    {
+      "sourceQualifiedName": "file:app/(dashboard)/dashboard/page.tsx",
+      "targetQualifiedName": "file:components/post-create-button.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "app/(dashboard)/dashboard/page.tsx:8 -> import { PostCreateButton } from \"@/components/post-create-button\""
+    },
+    {
+      "sourceQualifiedName": "file:app/(dashboard)/dashboard/page.tsx",
+      "targetQualifiedName": "file:components/post-item.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "app/(dashboard)/dashboard/page.tsx:9 -> import { PostItem } from \"@/components/post-item\""
+    },
+    {
+      "sourceQualifiedName": "file:app/(dashboard)/dashboard/page.tsx",
+      "targetQualifiedName": "file:components/shell.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "app/(dashboard)/dashboard/page.tsx:10 -> import { DashboardShell } from \"@/components/shell\""
+    },
+    {
+      "sourceQualifiedName": "file:app/(dashboard)/dashboard/page.tsx",
+      "targetQualifiedName": "file:lib/auth.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/(dashboard)/dashboard/page.tsx:3 -> import { authOptions } from \"@/lib/auth\""
+    },
+    {
+      "sourceQualifiedName": "file:app/(dashboard)/dashboard/page.tsx",
+      "targetQualifiedName": "file:lib/db.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/(dashboard)/dashboard/page.tsx:4 -> import { db } from \"@/lib/db\""
+    },
+    {
+      "sourceQualifiedName": "file:app/(dashboard)/dashboard/page.tsx",
+      "targetQualifiedName": "file:lib/session.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/(dashboard)/dashboard/page.tsx:5 -> import { getCurrentUser } from \"@/lib/session\""
+    },
+    {
+      "sourceQualifiedName": "file:app/(editor)/editor/[postId]/page.tsx",
+      "targetQualifiedName": "file:components/editor.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "app/(editor)/editor/[postId]/page.tsx:7 -> import { Editor } from \"@/components/editor\""
+    },
+    {
+      "sourceQualifiedName": "file:app/(editor)/editor/[postId]/page.tsx",
+      "targetQualifiedName": "file:lib/auth.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/(editor)/editor/[postId]/page.tsx:4 -> import { authOptions } from \"@/lib/auth\""
+    },
+    {
+      "sourceQualifiedName": "file:app/(editor)/editor/[postId]/page.tsx",
+      "targetQualifiedName": "file:lib/db.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/(editor)/editor/[postId]/page.tsx:5 -> import { db } from \"@/lib/db\""
+    },
+    {
+      "sourceQualifiedName": "file:app/(editor)/editor/[postId]/page.tsx",
+      "targetQualifiedName": "file:lib/session.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/(editor)/editor/[postId]/page.tsx:6 -> import { getCurrentUser } from \"@/lib/session\""
+    },
+    {
+      "sourceQualifiedName": "file:app/api/posts/[postId]/route.ts",
+      "targetQualifiedName": "file:lib/auth.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/api/posts/[postId]/route.ts:4 -> import { authOptions } from \"@/lib/auth\""
+    },
+    {
+      "sourceQualifiedName": "file:app/api/posts/[postId]/route.ts",
+      "targetQualifiedName": "file:lib/db.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/api/posts/[postId]/route.ts:5 -> import { db } from \"@/lib/db\""
+    },
+    {
+      "sourceQualifiedName": "file:app/api/posts/[postId]/route.ts",
+      "targetQualifiedName": "file:lib/validations/post.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "app/api/posts/[postId]/route.ts:6 -> import { postPatchSchema } from \"@/lib/validations/post\""
+    },
+    {
+      "sourceQualifiedName": "file:components/post-operations.tsx",
+      "targetQualifiedName": "file:components/icons.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "components/post-operations.tsx:26 -> import { Icons } from \"@/components/icons\""
+    },
+    {
+      "sourceQualifiedName": "file:components/post-operations.tsx",
+      "targetQualifiedName": "file:components/ui/alert-dialog.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "components/post-operations.tsx:8-17 -> import { AlertDialog, ... } from \"@/components/ui/alert-dialog\""
+    },
+    {
+      "sourceQualifiedName": "file:components/post-operations.tsx",
+      "targetQualifiedName": "file:components/ui/dropdown-menu.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "components/post-operations.tsx:18-24 -> import { DropdownMenu, ... } from \"@/components/ui/dropdown-menu\""
+    },
+    {
+      "sourceQualifiedName": "file:components/post-operations.tsx",
+      "targetQualifiedName": "file:components/ui/use-toast.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "components/post-operations.tsx:25 -> import { toast } from \"@/components/ui/use-toast\""
+    },
+    {
+      "sourceQualifiedName": "file:components/ui/button.tsx",
+      "targetQualifiedName": "file:lib/utils.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "components/ui/button.tsx:4 -> import { cn } from \"@/lib/utils\""
+    },
+    {
+      "sourceQualifiedName": "file:components/user-auth-form.tsx",
+      "targetQualifiedName": "file:components/icons.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "components/user-auth-form.tsx:16 -> import { Icons } from \"@/components/icons\""
+    },
+    {
+      "sourceQualifiedName": "file:components/user-auth-form.tsx",
+      "targetQualifiedName": "file:components/ui/button.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "components/user-auth-form.tsx:12 -> import { buttonVariants } from \"@/components/ui/button\""
+    },
+    {
+      "sourceQualifiedName": "file:components/user-auth-form.tsx",
+      "targetQualifiedName": "file:components/ui/input.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "components/user-auth-form.tsx:13 -> import { Input } from \"@/components/ui/input\""
+    },
+    {
+      "sourceQualifiedName": "file:components/user-auth-form.tsx",
+      "targetQualifiedName": "file:components/ui/label.tsx",
+      "edgeType": "IMPORTS",
+      "evidence": "components/user-auth-form.tsx:14 -> import { Label } from \"@/components/ui/label\""
+    },
+    {
+      "sourceQualifiedName": "file:components/user-auth-form.tsx",
+      "targetQualifiedName": "file:components/ui/use-toast.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "components/user-auth-form.tsx:15 -> import { toast } from \"@/components/ui/use-toast\""
+    },
+    {
+      "sourceQualifiedName": "file:components/user-auth-form.tsx",
+      "targetQualifiedName": "file:lib/utils.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "components/user-auth-form.tsx:10 -> import { cn } from \"@/lib/utils\""
+    },
+    {
+      "sourceQualifiedName": "file:components/user-auth-form.tsx",
+      "targetQualifiedName": "file:lib/validations/auth.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "components/user-auth-form.tsx:11 -> import { userAuthSchema } from \"@/lib/validations/auth\""
+    },
+    {
+      "sourceQualifiedName": "file:lib/subscription.ts",
+      "targetQualifiedName": "file:config/subscriptions.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "lib/subscription.ts:4 -> import { freePlan, proPlan } from \"@/config/subscriptions\""
+    },
+    {
+      "sourceQualifiedName": "file:lib/subscription.ts",
+      "targetQualifiedName": "file:lib/db.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "lib/subscription.ts:5 -> import { db } from \"@/lib/db\""
+    },
+    {
+      "sourceQualifiedName": "file:lib/utils.ts",
+      "targetQualifiedName": "file:env.mjs",
+      "edgeType": "IMPORTS",
+      "evidence": "lib/utils.ts:4 -> import { env } from \"@/env.mjs\""
+    }
+  ],
+  "expectedCalls": [
+    {
+      "sourceQualifiedName": "app/(dashboard)/dashboard/page.tsx::fn:DashboardPage",
+      "targetQualifiedName": "components/empty-placeholder.tsx::fn:EmptyPlaceholder",
+      "edgeType": "CALLS",
+      "callSiteLine": 51,
+      "evidence": "app/(dashboard)/dashboard/page.tsx:51 -> <EmptyPlaceholder> (JSX static component usage)"
+    },
+    {
+      "sourceQualifiedName": "app/(dashboard)/dashboard/page.tsx::fn:DashboardPage",
+      "targetQualifiedName": "components/header.tsx::fn:DashboardHeader",
+      "edgeType": "CALLS",
+      "callSiteLine": 40,
+      "evidence": "app/(dashboard)/dashboard/page.tsx:40 -> <DashboardHeader heading=\"Posts\" text=\"Create and manage posts.\"> (JSX static component usage)"
+    },
+    {
+      "sourceQualifiedName": "app/(dashboard)/dashboard/page.tsx::fn:DashboardPage",
+      "targetQualifiedName": "components/post-create-button.tsx::fn:PostCreateButton",
+      "edgeType": "CALLS",
+      "callSiteLine": 41,
+      "evidence": "app/(dashboard)/dashboard/page.tsx:41 -> <PostCreateButton /> (JSX static component usage)"
+    },
+    {
+      "sourceQualifiedName": "app/(dashboard)/dashboard/page.tsx::fn:DashboardPage",
+      "targetQualifiedName": "components/post-create-button.tsx::fn:PostCreateButton",
+      "edgeType": "CALLS",
+      "callSiteLine": 57,
+      "evidence": "app/(dashboard)/dashboard/page.tsx:57 -> <PostCreateButton variant=\"outline\" /> on separate line from L41"
+    },
+    {
+      "sourceQualifiedName": "app/(dashboard)/dashboard/page.tsx::fn:DashboardPage",
+      "targetQualifiedName": "components/post-item.tsx::fn:PostItem",
+      "edgeType": "CALLS",
+      "callSiteLine": 47,
+      "evidence": "app/(dashboard)/dashboard/page.tsx:47 -> <PostItem key={post.id} post={post} /> inside posts.map() callback"
+    },
+    {
+      "sourceQualifiedName": "app/(dashboard)/dashboard/page.tsx::fn:DashboardPage",
+      "targetQualifiedName": "components/shell.tsx::fn:DashboardShell",
+      "edgeType": "CALLS",
+      "callSiteLine": 39,
+      "evidence": "app/(dashboard)/dashboard/page.tsx:39 -> <DashboardShell> (JSX static component usage)"
+    },
+    {
+      "sourceQualifiedName": "app/(dashboard)/dashboard/page.tsx::fn:DashboardPage",
+      "targetQualifiedName": "lib/session.ts::fn:getCurrentUser",
+      "edgeType": "CALLS",
+      "callSiteLine": 17,
+      "evidence": "app/(dashboard)/dashboard/page.tsx:17 -> const user = await getCurrentUser()"
+    },
+    {
+      "sourceQualifiedName": "app/(editor)/editor/[postId]/page.tsx::fn:EditorPage",
+      "targetQualifiedName": "app/(editor)/editor/[postId]/page.tsx::fn:getPostForUser",
+      "edgeType": "CALLS",
+      "callSiteLine": 29,
+      "evidence": "app/(editor)/editor/[postId]/page.tsx:29 -> const post = await getPostForUser(params.postId, user.id)"
+    },
+    {
+      "sourceQualifiedName": "app/(editor)/editor/[postId]/page.tsx::fn:EditorPage",
+      "targetQualifiedName": "components/editor.tsx::fn:Editor",
+      "edgeType": "CALLS",
+      "callSiteLine": 36,
+      "evidence": "app/(editor)/editor/[postId]/page.tsx:36 -> <Editor post={{ ... }} /> (JSX static component usage)"
+    },
+    {
+      "sourceQualifiedName": "app/(editor)/editor/[postId]/page.tsx::fn:EditorPage",
+      "targetQualifiedName": "lib/session.ts::fn:getCurrentUser",
+      "edgeType": "CALLS",
+      "callSiteLine": 23,
+      "evidence": "app/(editor)/editor/[postId]/page.tsx:23 -> const user = await getCurrentUser()"
+    },
+    {
+      "sourceQualifiedName": "app/api/posts/[postId]/route.ts::fn:DELETE",
+      "targetQualifiedName": "app/api/posts/[postId]/route.ts::fn:verifyCurrentUserHasAccessToPost",
+      "edgeType": "CALLS",
+      "callSiteLine": 23,
+      "evidence": "app/api/posts/[postId]/route.ts:23 -> if (!(await verifyCurrentUserHasAccessToPost(params.postId)))"
+    },
+    {
+      "sourceQualifiedName": "app/api/posts/[postId]/route.ts::fn:PATCH",
+      "targetQualifiedName": "app/api/posts/[postId]/route.ts::fn:verifyCurrentUserHasAccessToPost",
+      "edgeType": "CALLS",
+      "callSiteLine": 53,
+      "evidence": "app/api/posts/[postId]/route.ts:53 -> if (!(await verifyCurrentUserHasAccessToPost(params.postId)))"
+    },
+    {
+      "sourceQualifiedName": "components/post-operations.tsx::fn:PostOperations",
+      "targetQualifiedName": "components/post-operations.tsx::fn:deletePost",
+      "edgeType": "CALLS",
+      "callSiteLine": 92,
+      "evidence": "components/post-operations.tsx:92 -> await deletePost(post.id) inside AlertDialogAction onClick callback"
+    },
+    {
+      "sourceQualifiedName": "components/post-operations.tsx::fn:PostOperations",
+      "targetQualifiedName": "components/ui/alert-dialog.tsx::fn:AlertDialogFooter",
+      "edgeType": "CALLS",
+      "callSiteLine": 85,
+      "evidence": "components/post-operations.tsx:85 -> <AlertDialogFooter> targeting exported arrow component in alert-dialog.tsx"
+    },
+    {
+      "sourceQualifiedName": "components/post-operations.tsx::fn:PostOperations",
+      "targetQualifiedName": "components/ui/alert-dialog.tsx::fn:AlertDialogHeader",
+      "edgeType": "CALLS",
+      "callSiteLine": 77,
+      "evidence": "components/post-operations.tsx:77 -> <AlertDialogHeader> targeting exported arrow component in alert-dialog.tsx"
+    },
+    {
+      "sourceQualifiedName": "components/post-operations.tsx::fn:PostOperations",
+      "targetQualifiedName": "components/ui/alert-dialog.tsx::sym:AlertDialogAction",
+      "edgeType": "CALLS",
+      "callSiteLine": 87,
+      "evidence": "components/post-operations.tsx:87 -> <AlertDialogAction ...> targeting recognized React.forwardRef HOC in alert-dialog.tsx"
+    },
+    {
+      "sourceQualifiedName": "components/post-operations.tsx::fn:PostOperations",
+      "targetQualifiedName": "components/ui/alert-dialog.tsx::sym:AlertDialogCancel",
+      "edgeType": "CALLS",
+      "callSiteLine": 86,
+      "evidence": "components/post-operations.tsx:86 -> <AlertDialogCancel> targeting recognized React.forwardRef HOC in alert-dialog.tsx"
+    },
+    {
+      "sourceQualifiedName": "components/post-operations.tsx::fn:PostOperations",
+      "targetQualifiedName": "components/ui/alert-dialog.tsx::sym:AlertDialogContent",
+      "edgeType": "CALLS",
+      "callSiteLine": 76,
+      "evidence": "components/post-operations.tsx:76 -> <AlertDialogContent> targeting recognized React.forwardRef HOC in alert-dialog.tsx"
+    },
+    {
+      "sourceQualifiedName": "components/post-operations.tsx::fn:PostOperations",
+      "targetQualifiedName": "components/ui/alert-dialog.tsx::sym:AlertDialogDescription",
+      "edgeType": "CALLS",
+      "callSiteLine": 81,
+      "evidence": "components/post-operations.tsx:81 -> <AlertDialogDescription> targeting recognized React.forwardRef HOC in alert-dialog.tsx"
+    },
+    {
+      "sourceQualifiedName": "components/post-operations.tsx::fn:PostOperations",
+      "targetQualifiedName": "components/ui/alert-dialog.tsx::sym:AlertDialogTitle",
+      "edgeType": "CALLS",
+      "callSiteLine": 78,
+      "evidence": "components/post-operations.tsx:78 -> <AlertDialogTitle> targeting recognized React.forwardRef HOC in alert-dialog.tsx"
+    },
+    {
+      "sourceQualifiedName": "components/post-operations.tsx::fn:PostOperations",
+      "targetQualifiedName": "components/ui/dropdown-menu.tsx::sym:DropdownMenuContent",
+      "edgeType": "CALLS",
+      "callSiteLine": 60,
+      "evidence": "components/post-operations.tsx:60 -> <DropdownMenuContent align=\"end\"> targeting recognized React.forwardRef HOC in dropdown-menu.tsx"
+    },
+    {
+      "sourceQualifiedName": "components/post-operations.tsx::fn:PostOperations",
+      "targetQualifiedName": "components/ui/dropdown-menu.tsx::sym:DropdownMenuItem",
+      "edgeType": "CALLS",
+      "callSiteLine": 61,
+      "evidence": "components/post-operations.tsx:61 -> <DropdownMenuItem> targeting recognized React.forwardRef HOC in dropdown-menu.tsx"
+    },
+    {
+      "sourceQualifiedName": "components/post-operations.tsx::fn:PostOperations",
+      "targetQualifiedName": "components/ui/dropdown-menu.tsx::sym:DropdownMenuItem",
+      "edgeType": "CALLS",
+      "callSiteLine": 67,
+      "evidence": "components/post-operations.tsx:67 -> <DropdownMenuItem ...> on separate line from L61"
+    },
+    {
+      "sourceQualifiedName": "components/post-operations.tsx::fn:PostOperations",
+      "targetQualifiedName": "components/ui/dropdown-menu.tsx::sym:DropdownMenuSeparator",
+      "edgeType": "CALLS",
+      "callSiteLine": 66,
+      "evidence": "components/post-operations.tsx:66 -> <DropdownMenuSeparator /> targeting recognized React.forwardRef HOC in dropdown-menu.tsx"
+    },
+    {
+      "sourceQualifiedName": "components/post-operations.tsx::fn:deletePost",
+      "targetQualifiedName": "components/ui/use-toast.ts::fn:toast",
+      "edgeType": "CALLS",
+      "callSiteLine": 34,
+      "evidence": "components/post-operations.tsx:34 -> toast({ title: \"Something went wrong.\", ... })"
+    },
+    {
+      "sourceQualifiedName": "components/ui/button.tsx::sym:Button",
+      "targetQualifiedName": "lib/utils.ts::fn:cn",
+      "edgeType": "CALLS",
+      "callSiteLine": 42,
+      "evidence": "components/ui/button.tsx:42 -> cn(buttonVariants({ variant, size, className })) inside React.forwardRef HOC Button"
+    },
+    {
+      "sourceQualifiedName": "components/user-auth-form.tsx::fn:UserAuthForm",
+      "targetQualifiedName": "components/ui/input.tsx::sym:Input",
+      "edgeType": "CALLS",
+      "callSiteLine": 67,
+      "evidence": "components/user-auth-form.tsx:67 -> <Input ... /> targeting recognized React.forwardRef HOC in input.tsx"
+    },
+    {
+      "sourceQualifiedName": "components/user-auth-form.tsx::fn:UserAuthForm",
+      "targetQualifiedName": "components/ui/label.tsx::sym:Label",
+      "edgeType": "CALLS",
+      "callSiteLine": 64,
+      "evidence": "components/user-auth-form.tsx:64 -> <Label className=\"sr-only\" htmlFor=\"email\"> targeting recognized React.forwardRef HOC in label.tsx"
+    },
+    {
+      "sourceQualifiedName": "components/user-auth-form.tsx::fn:UserAuthForm",
+      "targetQualifiedName": "components/ui/use-toast.ts::fn:toast",
+      "edgeType": "CALLS",
+      "callSiteLine": 46,
+      "evidence": "components/user-auth-form.tsx:46 -> toast({ ... }) inside nested onSubmit attributed to enclosing UserAuthForm"
+    },
+    {
+      "sourceQualifiedName": "components/user-auth-form.tsx::fn:UserAuthForm",
+      "targetQualifiedName": "components/ui/use-toast.ts::fn:toast",
+      "edgeType": "CALLS",
+      "callSiteLine": 53,
+      "evidence": "components/user-auth-form.tsx:53 -> toast({ ... }) inside nested onSubmit on separate line from L46"
+    },
+    {
+      "sourceQualifiedName": "components/user-auth-form.tsx::fn:UserAuthForm",
+      "targetQualifiedName": "lib/utils.ts::fn:cn",
+      "edgeType": "CALLS",
+      "callSiteLine": 60,
+      "evidence": "components/user-auth-form.tsx:60 -> cn(\"grid gap-6\", className)"
+    },
+    {
+      "sourceQualifiedName": "components/user-auth-form.tsx::fn:UserAuthForm",
+      "targetQualifiedName": "lib/utils.ts::fn:cn",
+      "edgeType": "CALLS",
+      "callSiteLine": 83,
+      "evidence": "components/user-auth-form.tsx:83 -> cn(buttonVariants())"
+    },
+    {
+      "sourceQualifiedName": "components/user-auth-form.tsx::fn:UserAuthForm",
+      "targetQualifiedName": "lib/utils.ts::fn:cn",
+      "edgeType": "CALLS",
+      "callSiteLine": 103,
+      "evidence": "components/user-auth-form.tsx:103 -> cn(buttonVariants({ variant: \"outline\" }))"
+    },
+    {
+      "sourceQualifiedName": "lib/toc.ts::fn:getItems",
+      "targetQualifiedName": "lib/toc.ts::fn:flattenNode",
+      "edgeType": "CALLS",
+      "callSiteLine": 38,
+      "evidence": "lib/toc.ts:38 -> flattenNode(node) inside visit() callback"
+    },
+    {
+      "sourceQualifiedName": "lib/toc.ts::fn:getItems",
+      "targetQualifiedName": "lib/toc.ts::fn:flattenNode",
+      "edgeType": "CALLS",
+      "callSiteLine": 42,
+      "evidence": "lib/toc.ts:42 -> flattenNode(node) inside visit() callback on separate line from L38"
+    },
+    {
+      "sourceQualifiedName": "lib/toc.ts::fn:getItems",
+      "targetQualifiedName": "lib/toc.ts::fn:getItems",
+      "edgeType": "CALLS",
+      "callSiteLine": 50,
+      "evidence": "lib/toc.ts:50 -> recursive getItems(i, {}) inside node.children.map() callback"
+    },
+    {
+      "sourceQualifiedName": "lib/toc.ts::fn:getItems",
+      "targetQualifiedName": "lib/toc.ts::fn:getItems",
+      "edgeType": "CALLS",
+      "callSiteLine": 54,
+      "evidence": "lib/toc.ts:54 -> recursive getItems(node.children[0], {})"
+    },
+    {
+      "sourceQualifiedName": "lib/toc.ts::fn:getItems",
+      "targetQualifiedName": "lib/toc.ts::fn:getItems",
+      "edgeType": "CALLS",
+      "callSiteLine": 57,
+      "evidence": "lib/toc.ts:57 -> recursive getItems(node.children[1], heading)"
+    },
+    {
+      "sourceQualifiedName": "lib/toc.ts::fn:getToc",
+      "targetQualifiedName": "lib/toc.ts::fn:getItems",
+      "edgeType": "CALLS",
+      "callSiteLine": 68,
+      "evidence": "lib/toc.ts:68 -> getItems(table.map, {}) inside curried getToc inner arrow attributed to enclosing fn:getToc"
+    }
+  ],
+  "excludedOrUncertainCandidates": [
+    {
+      "filePath": "app/(dashboard)/dashboard/page.tsx",
+      "line": 1,
+      "expression": "import { redirect } from \"next/navigation\" / redirect(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Next.js navigation import and call (L1, L20)"
+    },
+    {
+      "filePath": "app/(dashboard)/dashboard/page.tsx",
+      "line": 23,
+      "expression": "db.post.findMany(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External PrismaClient ORM query method on db exported from lib/db.ts"
+    },
+    {
+      "filePath": "app/(dashboard)/dashboard/page.tsx",
+      "line": 46,
+      "expression": "posts.map(...) / <div>",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Array.prototype.map and intrinsic HTML div elements (L43, L45-46)"
+    },
+    {
+      "filePath": "app/(dashboard)/dashboard/page.tsx",
+      "line": 52,
+      "expression": "<EmptyPlaceholder.Icon /> / <EmptyPlaceholder.Title> / <EmptyPlaceholder.Description>",
+      "classification": "excluded",
+      "reason": "other",
+      "notes": "Compound-component static property assignments (EmptyPlaceholder.Icon/Title/Description = function ...) in components/empty-placeholder.tsx do not have emitted graph nodes under Archon's node specification (L52-54)"
+    },
+    {
+      "filePath": "app/api/posts/[postId]/route.ts",
+      "line": 1,
+      "expression": "imports from \"next-auth\" and \"zod\"",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External NextAuth and Zod package imports (L1-2)"
+    },
+    {
+      "filePath": "app/api/posts/[postId]/route.ts",
+      "line": 8,
+      "expression": "z.object(...) / z.string() / routeContextSchema.parse(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Zod schema builder and parse calls (L8-10, L20, L50)"
+    },
+    {
+      "filePath": "app/api/posts/[postId]/route.ts",
+      "line": 24,
+      "expression": "new Response(...) / JSON.stringify(...) / req.json()",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Web Fetch API & JS built-ins across L24, L34, L37, L40, L54, L58, L73, L76, L79"
+    },
+    {
+      "filePath": "app/api/posts/[postId]/route.ts",
+      "line": 28,
+      "expression": "db.post.delete(...) / db.post.update(...) / db.post.count(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External PrismaClient ORM methods (L28, L63, L85)"
+    },
+    {
+      "filePath": "app/api/posts/[postId]/route.ts",
+      "line": 59,
+      "expression": "postPatchSchema.parse(json)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Zod .parse() method invoked on imported validation schema object from lib/validations/post.ts"
+    },
+    {
+      "filePath": "app/api/posts/[postId]/route.ts",
+      "line": 84,
+      "expression": "getServerSession(authOptions)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External next-auth function call"
+    },
+    {
+      "filePath": "app/(editor)/editor/[postId]/page.tsx",
+      "line": 1,
+      "expression": "imports from \"next/navigation\" and \"@prisma/client\"",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Next.js and Prisma package imports (L1-2)"
+    },
+    {
+      "filePath": "app/(editor)/editor/[postId]/page.tsx",
+      "line": 10,
+      "expression": "db.post.findFirst(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External PrismaClient ORM method"
+    },
+    {
+      "filePath": "app/(editor)/editor/[postId]/page.tsx",
+      "line": 26,
+      "expression": "redirect(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Next.js redirect()"
+    },
+    {
+      "filePath": "app/(editor)/editor/[postId]/page.tsx",
+      "line": 32,
+      "expression": "notFound()",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Next.js notFound()"
+    },
+    {
+      "filePath": "components/post-operations.tsx",
+      "line": 3,
+      "expression": "imports from \"react\", \"next/link\", \"next/navigation\", \"@prisma/client\"",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External package imports (L3-6)"
+    },
+    {
+      "filePath": "components/post-operations.tsx",
+      "line": 29,
+      "expression": "fetch(...) / event.preventDefault()",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Web Fetch and DOM event built-ins (L29, L89)"
+    },
+    {
+      "filePath": "components/post-operations.tsx",
+      "line": 49,
+      "expression": "useRouter() / React.useState() / setShowDeleteAlert() / setIsDeleteLoading() / router.refresh()",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External Next.js router and React hook/state setter calls (L49-51, L69, L90, L95-97)"
+    },
+    {
+      "filePath": "components/post-operations.tsx",
+      "line": 55,
+      "expression": "<DropdownMenu> / <DropdownMenuTrigger>",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "Direct re-assignments of external @radix-ui/react-dropdown-menu Root and Trigger primitives in dropdown-menu.tsx (L55-56)"
+    },
+    {
+      "filePath": "components/post-operations.tsx",
+      "line": 57,
+      "expression": "<Icons.ellipsis /> / <Icons.spinner /> / <Icons.trash />",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "Properties on Icons map directly to external lucide-react components MoreVertical, Loader2, and Trash (L57, L103, L105)"
+    },
+    {
+      "filePath": "components/post-operations.tsx",
+      "line": 62,
+      "expression": "<Link ...>",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External next/link component"
+    },
+    {
+      "filePath": "components/post-operations.tsx",
+      "line": 75,
+      "expression": "<AlertDialog ...>",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "Direct re-assignment of external @radix-ui/react-alert-dialog Root primitive in alert-dialog.tsx"
+    },
+    {
+      "filePath": "components/post-operations.tsx",
+      "line": 58,
+      "expression": "<> / <span>",
+      "classification": "excluded",
+      "reason": "jsx_intrinsic",
+      "notes": "JSX fragment and intrinsic HTML span elements (L54, L58, L107)"
+    },
+    {
+      "filePath": "components/user-auth-form.tsx",
+      "line": 3,
+      "expression": "imports from \"react\", \"next/navigation\", \"@hookform/resolvers/zod\", \"next-auth/react\", \"react-hook-form\", \"zod\"",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External package imports (L3-8)"
+    },
+    {
+      "filePath": "components/user-auth-form.tsx",
+      "line": 27,
+      "expression": "useForm() / zodResolver() / React.useState() / useSearchParams() / register() / handleSubmit()",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External hook/form calls; onSubmit at L61 is passed by reference to handleSubmit, not directly invoked (L27-32, L35, L43, L61, L75, L105)"
+    },
+    {
+      "filePath": "components/user-auth-form.tsx",
+      "line": 37,
+      "expression": "signIn(\"email\", ...) / signIn(\"github\")",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External next-auth/react signIn calls (L37, L106)"
+    },
+    {
+      "filePath": "components/user-auth-form.tsx",
+      "line": 38,
+      "expression": "data.email.toLowerCase() / searchParams?.get(\"from\")",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in String.prototype.toLowerCase and URLSearchParams.get (L38, L40)"
+    },
+    {
+      "filePath": "components/user-auth-form.tsx",
+      "line": 60,
+      "expression": "<div> / <form> / <p> / <button> / <span>",
+      "classification": "excluded",
+      "reason": "jsx_intrinsic",
+      "notes": "Intrinsic HTML elements throughout UserAuthForm JSX"
+    },
+    {
+      "filePath": "components/user-auth-form.tsx",
+      "line": 83,
+      "expression": "buttonVariants() / buttonVariants({ variant: \"outline\" })",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External cva()-generated closure from class-variance-authority in components/ui/button.tsx with no internal function body (L83, L103)"
+    },
+    {
+      "filePath": "components/user-auth-form.tsx",
+      "line": 85,
+      "expression": "<Icons.spinner />",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "Maps directly to external lucide-react Loader2 component (L85, L111)"
+    },
+    {
+      "filePath": "components/user-auth-form.tsx",
+      "line": 113,
+      "expression": "<Icons.gitHub className=\"mr-2 h-4 w-4\" />",
+      "classification": "excluded",
+      "reason": "other",
+      "notes": "Inline arrow property inside exported object literal Icons in components/icons.tsx does not receive an independent emitted graph node under Archon's node specification"
+    },
+    {
+      "filePath": "components/ui/button.tsx",
+      "line": 1,
+      "expression": "imports from \"react\" and \"class-variance-authority\"",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External React and CVA imports (L1-2)"
+    },
+    {
+      "filePath": "components/ui/button.tsx",
+      "line": 6,
+      "expression": "cva(...) / React.forwardRef(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External CVA factory and React forwardRef HOC calls (L6, L38)"
+    },
+    {
+      "filePath": "components/ui/button.tsx",
+      "line": 41,
+      "expression": "<button ... />",
+      "classification": "excluded",
+      "reason": "jsx_intrinsic",
+      "notes": "Intrinsic HTML button element"
+    },
+    {
+      "filePath": "components/ui/button.tsx",
+      "line": 42,
+      "expression": "buttonVariants({ variant, size, className })",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External cva()-generated closure with no internal function implementation"
+    },
+    {
+      "filePath": "lib/subscription.ts",
+      "line": 3,
+      "expression": "import { UserSubscriptionPlan } from \"types\"",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "Targets .d.ts declaration file (types/index.d.ts) excluded from Archon's supported source-file discovery (not in 129-file inventory)"
+    },
+    {
+      "filePath": "lib/subscription.ts",
+      "line": 10,
+      "expression": "db.user.findFirst(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External PrismaClient ORM method"
+    },
+    {
+      "filePath": "lib/subscription.ts",
+      "line": 23,
+      "expression": "new Error(\"User not found\")",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Error constructor"
+    },
+    {
+      "filePath": "lib/subscription.ts",
+      "line": 29,
+      "expression": "user.stripeCurrentPeriodEnd?.getTime() / Date.now()",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Date methods (L29, L36)"
+    },
+    {
+      "filePath": "lib/toc.ts",
+      "line": 4,
+      "expression": "imports from \"mdast-util-toc\", \"remark\", \"unist-util-visit\"",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External markdown/AST package imports (L4-6)"
+    },
+    {
+      "filePath": "lib/toc.ts",
+      "line": 12,
+      "expression": "visit(...) / toc(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External unist-util-visit and mdast-util-toc calls (L12, L35, L67)"
+    },
+    {
+      "filePath": "lib/toc.ts",
+      "line": 13,
+      "expression": "textTypes.includes() / p.push() / p.join() / node.children.map()",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Array methods (L13-14, L16, L50)"
+    },
+    {
+      "filePath": "lib/toc.ts",
+      "line": 76,
+      "expression": "remark().use(getToc).process(content)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External remark pipeline chain; getToc is passed by reference to .use(getToc) rather than directly invoked"
+    },
+    {
+      "filePath": "lib/toc.ts",
+      "line": 1,
+      "expression": "// @ts-nocheck",
+      "classification": "excluded",
+      "reason": "other",
+      "notes": "File uses // @ts-nocheck and untyped parameters (node, current, i), while remaining syntactically valid TypeScript"
+    },
+    {
+      "filePath": "lib/utils.ts",
+      "line": 1,
+      "expression": "imports from \"clsx\" and \"tailwind-merge\"",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External package imports (L1-2)"
+    },
+    {
+      "filePath": "lib/utils.ts",
+      "line": 7,
+      "expression": "twMerge(clsx(inputs))",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External tailwind-merge and clsx calls"
+    },
+    {
+      "filePath": "lib/utils.ts",
+      "line": 11,
+      "expression": "new Date(input) / date.toLocaleDateString(...)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Date constructor and formatting method (L11-12)"
+    },
+    {
+      "filePath": "lib/exceptions.ts",
+      "line": 3,
+      "expression": "super(message)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Error base constructor (external stdlib, not an internal CALLS target)"
+    }
+  ],
+  "notes": [
+    "Blind annotation completed from pinned taxonomy-sources.json blobs prior to any Archon analysis run.",
+    "The 47 excludedOrUncertainCandidates entries are grouped supplementary records summarizing out-of-scope imports/calls/JSX/unmapped properties rather than an exhaustive per-expression count.",
+    "Zero callable-wrapper extension cases and zero uncertain candidates were identified in this 10-file sample (primary CALLS denominator = 39; broader CALLS denominator = 39).",
+    "cva()-produced buttonVariants is an external factory closure with no internal function implementation; compound-component properties (EmptyPlaceholder.{Icon,Title,Description}) and object-literal inline arrow properties (Icons.gitHub) do not receive emitted graph nodes under Archon's node specification.",
+    "Frozen SHA-256 digest of this manifest is recorded externally after Prettier formatting and independent review."
+  ]
+}

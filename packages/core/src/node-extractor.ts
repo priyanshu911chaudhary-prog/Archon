@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { posix as posixPath } from 'node:path';
-import { ts } from 'ts-morph';
+import { type SourceFile, ts } from 'ts-morph';
 import { compareCodePoint } from './discovery.js';
 import type { AnalysisSourceFileEntry } from './project.js';
 import {
@@ -27,6 +27,306 @@ export interface ExtractNodesOptions {
   readonly parsedFiles: readonly AnalysisSourceFileEntry[];
   readonly maxFileSnippetChars?: number;
   readonly maxSymbolSnippetChars?: number;
+}
+
+export interface DeclarationNodeIndex {
+  /** Maps compiler AST declaration nodes (including overloads & initializers) to their allocated qualifiedName. */
+  readonly declarationToQualifiedName: ReadonlyMap<ts.Node, string>;
+  /** Maps emitted scope-owning AST nodes to their allocated qualifiedName for CALLS source attribution. */
+  readonly enclosingScopeToQualifiedName: ReadonlyMap<ts.Node, string>;
+  /** Maps class declarations/expressions (and bindings) with an explicit constructor to its allocated ::ctor qualifiedName. */
+  readonly classToConstructorQualifiedName: ReadonlyMap<ts.Node, string>;
+  /** 1:1 map of every emitted ExtractedNode qualifiedName to its NodeType. */
+  readonly nodeTypeByQualifiedName: ReadonlyMap<string, NodeType>;
+  /** Emitted function/method/constructor qualifiedNames whose overload group had no implementation body. */
+  readonly signatureOnlyQualifiedNames: ReadonlySet<string>;
+  /** Exported symbol qualifiedNames eligible for JSX component usage via statically recognized HOC wrappers (forwardRef/memo). */
+  readonly jsxEligibleSymbolQualifiedNames: ReadonlySet<string>;
+}
+
+export interface ExtractNodesWithIndexResult {
+  readonly nodes: readonly ExtractedNode[];
+  readonly declarationIndex: DeclarationNodeIndex;
+}
+
+interface MutableDeclarationIndex {
+  readonly declarationToQualifiedName: Map<ts.Node, string>;
+  readonly enclosingScopeToQualifiedName: Map<ts.Node, string>;
+  readonly classToConstructorQualifiedName: Map<ts.Node, string>;
+  readonly nodeTypeByQualifiedName: Map<string, NodeType>;
+  readonly signatureOnlyQualifiedNames: Set<string>;
+  readonly jsxEligibleSymbolQualifiedNames: Set<string>;
+}
+
+const RECOGNIZED_JSX_HOC_NAMES = new Set(['forwardRef', 'memo']);
+
+interface FileReactHocContext {
+  readonly directHocBindings: ReadonlySet<string>;
+  readonly reactNamespaceBindings: ReadonlySet<string>;
+  readonly localComponentNames: ReadonlySet<string>;
+}
+
+function collectTopLevelBindingNames(binding: ts.BindingName, out: Set<string>): void {
+  if (ts.isIdentifier(binding)) {
+    out.add(binding.text);
+    return;
+  }
+  for (const element of binding.elements) {
+    if (ts.isBindingElement(element)) {
+      collectTopLevelBindingNames(element.name, out);
+    }
+  }
+}
+
+function isRecognizableJsxHocCallee(callee: ts.Expression, context: FileReactHocContext): boolean {
+  const unwrapped = unwrapExpression(callee);
+  if (ts.isIdentifier(unwrapped)) {
+    return context.directHocBindings.has(unwrapped.text);
+  }
+  if (ts.isPropertyAccessExpression(unwrapped)) {
+    const obj = unwrapExpression(unwrapped.expression);
+    return (
+      ts.isIdentifier(obj) &&
+      context.reactNamespaceBindings.has(obj.text) &&
+      RECOGNIZED_JSX_HOC_NAMES.has(unwrapped.name.text)
+    );
+  }
+  return false;
+}
+
+function isRecognizableJsxHocArgument(arg: ts.Expression, context: FileReactHocContext): boolean {
+  const unwrapped = unwrapExpression(arg);
+  if (
+    ts.isArrowFunction(unwrapped) ||
+    ts.isFunctionExpression(unwrapped) ||
+    ts.isClassExpression(unwrapped)
+  ) {
+    return true;
+  }
+  if (ts.isIdentifier(unwrapped)) {
+    return context.localComponentNames.has(unwrapped.text);
+  }
+  return isRecognizableJsxHocExpression(unwrapped, context);
+}
+
+/**
+ * Recognizes statically identifiable React component HOC wrappers bound via non-type-only
+ * `'react'` imports (`memo`, `forwardRef`, aliases, `React.memo`, `React.forwardRef`, and
+ * nested compositions) without requiring React or external type declarations to be installed.
+ * This is a conservative component-binding heuristic, not proof of React runtime behavior.
+ */
+function isRecognizableJsxHocExpression(
+  expr: ts.Expression,
+  context: FileReactHocContext,
+): boolean {
+  const unwrapped = unwrapExpression(expr);
+  if (!ts.isCallExpression(unwrapped)) {
+    return false;
+  }
+  if (!isRecognizableJsxHocCallee(unwrapped.expression, context)) {
+    return false;
+  }
+  const firstArg = unwrapped.arguments[0];
+  return firstArg !== undefined && isRecognizableJsxHocArgument(firstArg, context);
+}
+
+function collectFileReactHocContext(
+  sourceFile: SourceFile,
+  sf: ts.SourceFile,
+): FileReactHocContext {
+  // Declaration files (.d.ts) contain no runtime React HOC component implementations
+  if (sf.isDeclarationFile) {
+    return {
+      directHocBindings: new Set<string>(),
+      reactNamespaceBindings: new Set<string>(),
+      localComponentNames: new Set<string>(),
+    };
+  }
+
+  // Separate names that occupy/shadow local bindings from eligible runtime component candidates
+  const valueDeclaredTopLevelNames = new Set<string>();
+  const localComponentNames = new Set<string>();
+  const candidateVarDecls: { readonly name: string; readonly init: ts.Expression }[] = [];
+
+  for (const stmt of sf.statements) {
+    const isAmbientStmt = hasModifier(stmt, ts.SyntaxKind.DeclareKeyword);
+
+    if (ts.isFunctionDeclaration(stmt) && stmt.name !== undefined) {
+      valueDeclaredTopLevelNames.add(stmt.name.text);
+      // Require an actual implementation body and non-ambient context (preserves implemented overload groups)
+      if (!isAmbientStmt && stmt.body !== undefined) {
+        localComponentNames.add(stmt.name.text);
+      }
+    } else if (ts.isClassDeclaration(stmt) && stmt.name !== undefined) {
+      valueDeclaredTopLevelNames.add(stmt.name.text);
+      // Reject ambient and abstract classes while keeping concrete classes with implicit constructors
+      if (!isAmbientStmt && !hasModifier(stmt, ts.SyntaxKind.AbstractKeyword)) {
+        localComponentNames.add(stmt.name.text);
+      }
+    } else if (ts.isVariableStatement(stmt)) {
+      for (const decl of stmt.declarationList.declarations) {
+        collectTopLevelBindingNames(decl.name, valueDeclaredTopLevelNames);
+        if (isAmbientStmt || !ts.isIdentifier(decl.name) || decl.initializer === undefined) {
+          continue;
+        }
+        const init = unwrapExpression(decl.initializer);
+        if (
+          ts.isArrowFunction(init) ||
+          ts.isFunctionExpression(init) ||
+          ts.isClassExpression(init)
+        ) {
+          localComponentNames.add(decl.name.text);
+        } else {
+          candidateVarDecls.push({ name: decl.name.text, init });
+        }
+      }
+    }
+  }
+
+  const directHocBindings = new Set<string>();
+  const reactNamespaceBindings = new Set<string>();
+
+  for (const importDecl of sourceFile.getImportDeclarations()) {
+    if (importDecl.isTypeOnly() || importDecl.getModuleSpecifierValue() !== 'react') {
+      continue;
+    }
+    const clause = importDecl.compilerNode.importClause;
+    if (clause === undefined || clause.phaseModifier === ts.SyntaxKind.TypeKeyword) {
+      continue;
+    }
+    if (clause.name !== undefined && !valueDeclaredTopLevelNames.has(clause.name.text)) {
+      reactNamespaceBindings.add(clause.name.text);
+    }
+    const namedBindings = clause.namedBindings;
+    if (namedBindings !== undefined) {
+      if (ts.isNamespaceImport(namedBindings)) {
+        if (!valueDeclaredTopLevelNames.has(namedBindings.name.text)) {
+          reactNamespaceBindings.add(namedBindings.name.text);
+        }
+      } else if (ts.isNamedImports(namedBindings)) {
+        for (const spec of namedBindings.elements) {
+          if (spec.isTypeOnly) {
+            continue;
+          }
+          const importedName = (spec.propertyName ?? spec.name).text;
+          if (
+            RECOGNIZED_JSX_HOC_NAMES.has(importedName) &&
+            !valueDeclaredTopLevelNames.has(spec.name.text)
+          ) {
+            directHocBindings.add(spec.name.text);
+          }
+        }
+      }
+    }
+  }
+
+  const context: FileReactHocContext = {
+    directHocBindings,
+    reactNamespaceBindings,
+    localComponentNames,
+  };
+
+  // Fixed-point pass so `const Base = forwardRef(...); export const Outer = memo(Base);` resolves cleanly
+  if (directHocBindings.size > 0 || reactNamespaceBindings.size > 0) {
+    let added = true;
+    while (added) {
+      added = false;
+      for (const candidate of candidateVarDecls) {
+        if (
+          !localComponentNames.has(candidate.name) &&
+          isRecognizableJsxHocExpression(candidate.init, context)
+        ) {
+          localComponentNames.add(candidate.name);
+          added = true;
+        }
+      }
+    }
+  }
+
+  return context;
+}
+
+/**
+ * Walks upward from an AST expression to its nearest emitted enclosing scope node,
+ * respecting definition-time boundaries outside callable/class bodies:
+ * - Expressions in a member's computed property name or decorator walk past the member to the enclosing class.
+ * - Expressions in a class decorator or heritage clause (`extends expr`) walk past the class to the enclosing file/callable.
+ */
+export function findEnclosingScopeQualifiedName(
+  node: ts.Node,
+  index: DeclarationNodeIndex,
+): string | null {
+  let prev = node;
+
+  while (!ts.isSourceFile(prev)) {
+    const current = prev.parent;
+    const scopeQn = index.enclosingScopeToQualifiedName.get(current);
+
+    if (scopeQn !== undefined) {
+      if (ts.isClassDeclaration(current) || ts.isClassExpression(current)) {
+        const isInsideMember = current.members.some((member) => member === prev);
+
+        if (!isInsideMember) {
+          prev = current;
+          continue;
+        }
+      } else if (
+        ts.isFunctionDeclaration(current) ||
+        ts.isMethodDeclaration(current) ||
+        ts.isGetAccessorDeclaration(current) ||
+        ts.isSetAccessorDeclaration(current) ||
+        ts.isConstructorDeclaration(current)
+      ) {
+        const isDecorator = prev.kind === ts.SyntaxKind.Decorator;
+        const isDeclaredName = !ts.isConstructorDeclaration(current) && current.name === prev;
+
+        if (isDecorator || isDeclaredName) {
+          prev = current;
+          continue;
+        }
+      }
+
+      return scopeQn;
+    }
+
+    prev = current;
+  }
+
+  return null;
+}
+
+function registerOverloadGroupDeclarations<
+  T extends ts.FunctionDeclaration | ts.MethodDeclaration | ts.ConstructorDeclaration,
+>(
+  group: readonly T[],
+  allocatedByImpl: ReadonlyMap<T, string>,
+  fallbackQn: string,
+  index: MutableDeclarationIndex,
+): void {
+  for (let i = 0; i < group.length; i += 1) {
+    const decl = group[i];
+    if (decl === undefined) {
+      continue;
+    }
+    const directQn = allocatedByImpl.get(decl);
+    if (directQn !== undefined) {
+      index.declarationToQualifiedName.set(decl, directQn);
+      continue;
+    }
+    // Map overload signature to the next implementation in the group, falling back to primary
+    let matchedQn = fallbackQn;
+    for (let j = i + 1; j < group.length; j += 1) {
+      const nextDecl = group[j];
+      if (nextDecl !== undefined) {
+        const nextQn = allocatedByImpl.get(nextDecl);
+        if (nextQn !== undefined) {
+          matchedQn = nextQn;
+          break;
+        }
+      }
+    }
+    index.declarationToQualifiedName.set(decl, matchedQn);
+  }
 }
 
 class LineIndex {
@@ -275,6 +575,7 @@ function getNodeRange(
 
 function extractClassMembers(
   classLike: ts.ClassLikeDeclaration,
+  classBindingNodes: readonly ts.Node[],
   parentClassQualifiedName: string,
   filePath: string,
   sf: ts.SourceFile,
@@ -282,6 +583,7 @@ function extractClassMembers(
   registry: QualifiedNameRegistry,
   maxSymbolSnippetChars: number,
   outNodes: ExtractedNode[],
+  index: MutableDeclarationIndex,
 ): void {
   // 1. Constructors (collapse overload signatures onto single implementation)
   const constructors: ts.ConstructorDeclaration[] = [];
@@ -292,13 +594,19 @@ function extractClassMembers(
   }
   if (constructors.length > 0) {
     const impls = constructors.filter((c) => c.body !== undefined);
+    const signatureOnly = impls.length === 0;
     const chosen = impls.length > 0 ? impls : constructors.slice(0, 1);
+    const allocatedByCtor = new Map<ts.ConstructorDeclaration, string>();
+    let primaryCtorQn: string | undefined;
+
     for (const ctor of chosen) {
       const range = getNodeRange(ctor, sf, lineIndex);
       const qn = registry.allocate(
         buildConstructorQualifiedName(parentClassQualifiedName),
         range.startLoc,
       );
+      primaryCtorQn ??= qn;
+      allocatedByCtor.set(ctor, qn);
       outNodes.push({
         nodeType: 'function',
         name: 'constructor',
@@ -311,6 +619,20 @@ function extractClassMembers(
         contentHash: sha256Lf(range.rawText),
         snippet: boundSnippet(range.rawText, maxSymbolSnippetChars),
       });
+      index.nodeTypeByQualifiedName.set(qn, 'function');
+      if (signatureOnly) {
+        index.signatureOnlyQualifiedNames.add(qn);
+      } else {
+        index.enclosingScopeToQualifiedName.set(ctor, qn);
+      }
+    }
+
+    if (primaryCtorQn !== undefined) {
+      registerOverloadGroupDeclarations(constructors, allocatedByCtor, primaryCtorQn, index);
+      index.classToConstructorQualifiedName.set(classLike, primaryCtorQn);
+      for (const bindingNode of classBindingNodes) {
+        index.classToConstructorQualifiedName.set(bindingNode, primaryCtorQn);
+      }
     }
   }
 
@@ -336,7 +658,11 @@ function extractClassMembers(
 
   for (const group of methodGroups.values()) {
     const impls = group.filter((m) => m.body !== undefined);
+    const signatureOnly = impls.length === 0;
     const chosen = impls.length > 0 ? impls : group.slice(0, 1);
+    const allocatedByMethod = new Map<ts.MethodDeclaration, string>();
+    let primaryMethodQn: string | undefined;
+
     for (const method of chosen) {
       const name = getPropertyNameText(method.name, sf);
       if (name === null) {
@@ -348,6 +674,8 @@ function extractClassMembers(
         buildMethodQualifiedName(parentClassQualifiedName, name, isStatic),
         range.startLoc,
       );
+      primaryMethodQn ??= qn;
+      allocatedByMethod.set(method, qn);
       outNodes.push({
         nodeType: 'function',
         name,
@@ -360,6 +688,16 @@ function extractClassMembers(
         contentHash: sha256Lf(range.rawText),
         snippet: boundSnippet(range.rawText, maxSymbolSnippetChars),
       });
+      index.nodeTypeByQualifiedName.set(qn, 'function');
+      if (signatureOnly) {
+        index.signatureOnlyQualifiedNames.add(qn);
+      } else {
+        index.enclosingScopeToQualifiedName.set(method, qn);
+      }
+    }
+
+    if (primaryMethodQn !== undefined) {
+      registerOverloadGroupDeclarations(group, allocatedByMethod, primaryMethodQn, index);
     }
   }
 
@@ -389,6 +727,13 @@ function extractClassMembers(
         contentHash: sha256Lf(range.rawText),
         snippet: boundSnippet(range.rawText, maxSymbolSnippetChars),
       });
+      index.nodeTypeByQualifiedName.set(qn, 'function');
+      index.declarationToQualifiedName.set(member, qn);
+      if (member.body === undefined) {
+        index.signatureOnlyQualifiedNames.add(qn);
+      } else {
+        index.enclosingScopeToQualifiedName.set(member, qn);
+      }
       continue;
     }
 
@@ -419,17 +764,33 @@ function extractClassMembers(
         contentHash: sha256Lf(range.rawText),
         snippet: boundSnippet(range.rawText, maxSymbolSnippetChars),
       });
+      index.nodeTypeByQualifiedName.set(qn, 'function');
+      index.declarationToQualifiedName.set(member, qn);
+      index.declarationToQualifiedName.set(init, qn);
+      index.enclosingScopeToQualifiedName.set(init, qn);
     }
   }
 }
 
-export function extractNodesFromFiles(options: ExtractNodesOptions): readonly ExtractedNode[] {
+/**
+ * Extracts all graph nodes along with an internal `DeclarationNodeIndex` populated directly
+ * from the allocated `qualifiedName` values during node emission (never reconstructed later).
+ */
+export function extractNodesWithIndex(options: ExtractNodesOptions): ExtractNodesWithIndexResult {
   const maxFileSnippetChars = options.maxFileSnippetChars ?? DEFAULT_MAX_FILE_SNIPPET_CHARS;
   const maxSymbolSnippetChars = options.maxSymbolSnippetChars ?? DEFAULT_MAX_SYMBOL_SNIPPET_CHARS;
 
   const registry = new QualifiedNameRegistry();
   const folderNodes = new Map<string, ExtractedNode>();
   const allNodes: ExtractedNode[] = [];
+  const index: MutableDeclarationIndex = {
+    declarationToQualifiedName: new Map<ts.Node, string>(),
+    enclosingScopeToQualifiedName: new Map<ts.Node, string>(),
+    classToConstructorQualifiedName: new Map<ts.Node, string>(),
+    nodeTypeByQualifiedName: new Map<string, NodeType>(),
+    signatureOnlyQualifiedNames: new Set<string>(),
+    jsxEligibleSymbolQualifiedNames: new Set<string>(),
+  };
 
   const ensureFolderChain = (relFilePath: string): string | null => {
     const dir = posixPath.dirname(relFilePath);
@@ -463,6 +824,7 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
         snippet: null,
       };
       folderNodes.set(currentDir, folderNode);
+      index.nodeTypeByQualifiedName.set(folderQn, 'folder');
       parentQn = folderQn;
     }
 
@@ -488,8 +850,11 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
       contentHash: sha256Lf(entry.sourceText),
       snippet: boundSnippet(entry.sourceText, maxFileSnippetChars),
     });
+    index.nodeTypeByQualifiedName.set(fileQn, 'file');
+    index.enclosingScopeToQualifiedName.set(sf, fileQn);
 
     const exportMeta = collectFileExportMetadata(sf);
+    const reactHocContext = collectFileReactHocContext(entry.sourceFile, sf);
 
     // Pre-group top-level named FunctionDeclarations so overload signatures collapse cleanly
     const namedFnGroups = new Map<string, ts.FunctionDeclaration[]>();
@@ -526,6 +891,7 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
         contentHash: sha256Lf(range.rawText),
         snippet: boundSnippet(range.rawText, maxSymbolSnippetChars),
       });
+      index.nodeTypeByQualifiedName.set(qn, nodeType);
       return qn;
     };
 
@@ -536,13 +902,19 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
           const isExported =
             hasModifier(stmt, ts.SyntaxKind.ExportKeyword) ||
             hasModifier(stmt, ts.SyntaxKind.DefaultKeyword);
-          emitInlineNode(
+          const qn = emitInlineNode(
             'function',
             'default',
             buildDefaultExportQualifiedName(filePath),
             stmt,
             isExported,
           );
+          index.declarationToQualifiedName.set(stmt, qn);
+          if (stmt.body === undefined) {
+            index.signatureOnlyQualifiedNames.add(qn);
+          } else {
+            index.enclosingScopeToQualifiedName.set(stmt, qn);
+          }
           continue;
         }
 
@@ -558,16 +930,30 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
           group.some((fn) => hasModifier(fn, ts.SyntaxKind.ExportKeyword));
 
         const impls = group.filter((fn) => fn.body !== undefined);
+        const signatureOnly = impls.length === 0;
         const chosen = impls.length > 0 ? impls : group.slice(0, 1);
+        const allocatedByFn = new Map<ts.FunctionDeclaration, string>();
+        let primaryFnQn: string | undefined;
 
         for (const fn of chosen) {
-          emitInlineNode(
+          const qn = emitInlineNode(
             'function',
             fnName,
             buildFunctionQualifiedName(filePath, fnName),
             fn,
             groupExported,
           );
+          primaryFnQn ??= qn;
+          allocatedByFn.set(fn, qn);
+          if (signatureOnly) {
+            index.signatureOnlyQualifiedNames.add(qn);
+          } else {
+            index.enclosingScopeToQualifiedName.set(fn, qn);
+          }
+        }
+
+        if (primaryFnQn !== undefined) {
+          registerOverloadGroupDeclarations(group, allocatedByFn, primaryFnQn, index);
         }
         continue;
       }
@@ -590,8 +976,11 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
           stmt,
           isExported,
         );
+        index.declarationToQualifiedName.set(stmt, allocatedClassQn);
+        index.enclosingScopeToQualifiedName.set(stmt, allocatedClassQn);
         extractClassMembers(
           stmt,
+          [],
           allocatedClassQn,
           filePath,
           sf,
@@ -599,6 +988,7 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
           registry,
           maxSymbolSnippetChars,
           allNodes,
+          index,
         );
         continue;
       }
@@ -617,13 +1007,16 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
 
           if (init !== undefined && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) {
             // Arrow/function expression -> emit ONLY a 'function' node (never duplicate 'symbol')
-            emitInlineNode(
+            const qn = emitInlineNode(
               'function',
               varName,
               buildFunctionQualifiedName(filePath, varName),
               decl,
               isExported,
             );
+            index.declarationToQualifiedName.set(decl, qn);
+            index.declarationToQualifiedName.set(init, qn);
+            index.enclosingScopeToQualifiedName.set(init, qn);
             continue;
           }
 
@@ -635,8 +1028,12 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
               decl,
               isExported,
             );
+            index.declarationToQualifiedName.set(decl, allocatedClassQn);
+            index.declarationToQualifiedName.set(init, allocatedClassQn);
+            index.enclosingScopeToQualifiedName.set(init, allocatedClassQn);
             extractClassMembers(
               init,
+              [decl],
               allocatedClassQn,
               filePath,
               sf,
@@ -644,25 +1041,32 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
               registry,
               maxSymbolSnippetChars,
               allNodes,
+              index,
             );
             continue;
           }
 
           // Non-function top-level variable -> emit 'symbol' ONLY when exported
           if (isExported) {
-            emitInlineNode(
+            const qn = emitInlineNode(
               'symbol',
               varName,
               buildSymbolQualifiedName(filePath, varName),
               decl,
               true,
             );
+            // Register in CALLS declaration index ONLY when statically recognizable as a JSX HOC wrapper
+            if (init !== undefined && isRecognizableJsxHocExpression(init, reactHocContext)) {
+              index.declarationToQualifiedName.set(decl, qn);
+              index.jsxEligibleSymbolQualifiedNames.add(qn);
+              index.enclosingScopeToQualifiedName.set(init, qn);
+            }
           }
         }
         continue;
       }
 
-      // 4. Exported interfaces, type aliases, and enums
+      // 4. Exported interfaces, type aliases, and enums (emitted in nodes; erased/non-callable -> NOT in CALLS declaration index)
       if (
         ts.isInterfaceDeclaration(stmt) ||
         ts.isTypeAliasDeclaration(stmt) ||
@@ -686,13 +1090,16 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
           continue;
         }
         if (ts.isArrowFunction(rhs) || ts.isFunctionExpression(rhs)) {
-          emitInlineNode(
+          const qn = emitInlineNode(
             'function',
             'default',
             buildDefaultExportQualifiedName(filePath),
             stmt,
             true,
           );
+          index.declarationToQualifiedName.set(stmt, qn);
+          index.declarationToQualifiedName.set(rhs, qn);
+          index.enclosingScopeToQualifiedName.set(rhs, qn);
         } else if (ts.isClassExpression(rhs)) {
           const allocatedClassQn = emitInlineNode(
             'class',
@@ -701,8 +1108,12 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
             stmt,
             true,
           );
+          index.declarationToQualifiedName.set(stmt, allocatedClassQn);
+          index.declarationToQualifiedName.set(rhs, allocatedClassQn);
+          index.enclosingScopeToQualifiedName.set(rhs, allocatedClassQn);
           extractClassMembers(
             rhs,
+            [stmt],
             allocatedClassQn,
             filePath,
             sf,
@@ -710,15 +1121,21 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
             registry,
             maxSymbolSnippetChars,
             allNodes,
+            index,
           );
         } else {
-          emitInlineNode(
+          const qn = emitInlineNode(
             'symbol',
             'default',
             buildDefaultExportQualifiedName(filePath),
             stmt,
             true,
           );
+          if (isRecognizableJsxHocExpression(rhs, reactHocContext)) {
+            index.declarationToQualifiedName.set(stmt, qn);
+            index.jsxEligibleSymbolQualifiedNames.add(qn);
+            index.enclosingScopeToQualifiedName.set(rhs, qn);
+          }
         }
         continue;
       }
@@ -729,7 +1146,8 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
         ts.isBinaryExpression(stmt.expression) &&
         stmt.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
       ) {
-        const { left, right } = stmt.expression;
+        const assignExpr = stmt.expression;
+        const { left, right } = assignExpr;
         const rhs = unwrapExpression(right);
 
         if (isModuleExportsExpr(left)) {
@@ -737,13 +1155,18 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
             continue;
           }
           if (ts.isArrowFunction(rhs) || ts.isFunctionExpression(rhs)) {
-            emitInlineNode(
+            const qn = emitInlineNode(
               'function',
               'default',
               buildDefaultExportQualifiedName(filePath),
               stmt,
               true,
             );
+            index.declarationToQualifiedName.set(stmt, qn);
+            index.declarationToQualifiedName.set(assignExpr, qn);
+            index.declarationToQualifiedName.set(left, qn);
+            index.declarationToQualifiedName.set(rhs, qn);
+            index.enclosingScopeToQualifiedName.set(rhs, qn);
           } else if (ts.isClassExpression(rhs)) {
             const allocatedClassQn = emitInlineNode(
               'class',
@@ -752,8 +1175,14 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
               stmt,
               true,
             );
+            index.declarationToQualifiedName.set(stmt, allocatedClassQn);
+            index.declarationToQualifiedName.set(assignExpr, allocatedClassQn);
+            index.declarationToQualifiedName.set(left, allocatedClassQn);
+            index.declarationToQualifiedName.set(rhs, allocatedClassQn);
+            index.enclosingScopeToQualifiedName.set(rhs, allocatedClassQn);
             extractClassMembers(
               rhs,
+              [stmt, assignExpr, left],
               allocatedClassQn,
               filePath,
               sf,
@@ -761,19 +1190,26 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
               registry,
               maxSymbolSnippetChars,
               allNodes,
+              index,
             );
           } else if (ts.isObjectLiteralExpression(rhs)) {
             for (const prop of rhs.properties) {
               if (ts.isMethodDeclaration(prop)) {
                 const propName = getPropertyNameText(prop.name, sf);
                 if (propName !== null) {
-                  emitInlineNode(
+                  const qn = emitInlineNode(
                     'function',
                     propName,
                     buildFunctionQualifiedName(filePath, propName),
                     prop,
                     true,
                   );
+                  index.declarationToQualifiedName.set(prop, qn);
+                  if (prop.body === undefined) {
+                    index.signatureOnlyQualifiedNames.add(qn);
+                  } else {
+                    index.enclosingScopeToQualifiedName.set(prop, qn);
+                  }
                 }
               } else if (ts.isPropertyAssignment(prop)) {
                 const propName = getPropertyNameText(prop.name, sf);
@@ -788,13 +1224,16 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
                   continue;
                 }
                 if (ts.isArrowFunction(propVal) || ts.isFunctionExpression(propVal)) {
-                  emitInlineNode(
+                  const qn = emitInlineNode(
                     'function',
                     propName,
                     buildFunctionQualifiedName(filePath, propName),
                     prop,
                     true,
                   );
+                  index.declarationToQualifiedName.set(prop, qn);
+                  index.declarationToQualifiedName.set(propVal, qn);
+                  index.enclosingScopeToQualifiedName.set(propVal, qn);
                 } else if (ts.isClassExpression(propVal)) {
                   const classQn = emitInlineNode(
                     'class',
@@ -803,8 +1242,12 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
                     prop,
                     true,
                   );
+                  index.declarationToQualifiedName.set(prop, classQn);
+                  index.declarationToQualifiedName.set(propVal, classQn);
+                  index.enclosingScopeToQualifiedName.set(propVal, classQn);
                   extractClassMembers(
                     propVal,
+                    [prop],
                     classQn,
                     filePath,
                     sf,
@@ -812,26 +1255,39 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
                     registry,
                     maxSymbolSnippetChars,
                     allNodes,
+                    index,
                   );
                 } else {
-                  emitInlineNode(
+                  const qn = emitInlineNode(
                     'symbol',
                     propName,
                     buildSymbolQualifiedName(filePath, propName),
                     prop,
                     true,
                   );
+                  if (isRecognizableJsxHocExpression(propVal, reactHocContext)) {
+                    index.declarationToQualifiedName.set(prop, qn);
+                    index.jsxEligibleSymbolQualifiedNames.add(qn);
+                    index.enclosingScopeToQualifiedName.set(propVal, qn);
+                  }
                 }
               }
             }
           } else {
-            emitInlineNode(
+            const qn = emitInlineNode(
               'symbol',
               'default',
               buildDefaultExportQualifiedName(filePath),
               stmt,
               true,
             );
+            if (isRecognizableJsxHocExpression(rhs, reactHocContext)) {
+              index.declarationToQualifiedName.set(stmt, qn);
+              index.declarationToQualifiedName.set(assignExpr, qn);
+              index.declarationToQualifiedName.set(left, qn);
+              index.jsxEligibleSymbolQualifiedNames.add(qn);
+              index.enclosingScopeToQualifiedName.set(rhs, qn);
+            }
           }
           continue;
         }
@@ -842,13 +1298,18 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
             continue;
           }
           if (ts.isArrowFunction(rhs) || ts.isFunctionExpression(rhs)) {
-            emitInlineNode(
+            const qn = emitInlineNode(
               'function',
               cjsExportName,
               buildFunctionQualifiedName(filePath, cjsExportName),
               stmt,
               true,
             );
+            index.declarationToQualifiedName.set(stmt, qn);
+            index.declarationToQualifiedName.set(assignExpr, qn);
+            index.declarationToQualifiedName.set(left, qn);
+            index.declarationToQualifiedName.set(rhs, qn);
+            index.enclosingScopeToQualifiedName.set(rhs, qn);
           } else if (ts.isClassExpression(rhs)) {
             const classQn = emitInlineNode(
               'class',
@@ -857,8 +1318,14 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
               stmt,
               true,
             );
+            index.declarationToQualifiedName.set(stmt, classQn);
+            index.declarationToQualifiedName.set(assignExpr, classQn);
+            index.declarationToQualifiedName.set(left, classQn);
+            index.declarationToQualifiedName.set(rhs, classQn);
+            index.enclosingScopeToQualifiedName.set(rhs, classQn);
             extractClassMembers(
               rhs,
+              [stmt, assignExpr, left],
               classQn,
               filePath,
               sf,
@@ -866,15 +1333,23 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
               registry,
               maxSymbolSnippetChars,
               allNodes,
+              index,
             );
           } else {
-            emitInlineNode(
+            const qn = emitInlineNode(
               'symbol',
               cjsExportName,
               buildSymbolQualifiedName(filePath, cjsExportName),
               stmt,
               true,
             );
+            if (isRecognizableJsxHocExpression(rhs, reactHocContext)) {
+              index.declarationToQualifiedName.set(stmt, qn);
+              index.declarationToQualifiedName.set(assignExpr, qn);
+              index.declarationToQualifiedName.set(left, qn);
+              index.jsxEligibleSymbolQualifiedNames.add(qn);
+              index.enclosingScopeToQualifiedName.set(rhs, qn);
+            }
           }
         }
       }
@@ -888,5 +1363,12 @@ export function extractNodesFromFiles(options: ExtractNodesOptions): readonly Ex
     compareCodePoint(a.qualifiedName, b.qualifiedName),
   );
 
-  return [...sortedFolders, ...sortedFileAndChildNodes];
+  return {
+    nodes: [...sortedFolders, ...sortedFileAndChildNodes],
+    declarationIndex: index,
+  };
+}
+
+export function extractNodesFromFiles(options: ExtractNodesOptions): readonly ExtractedNode[] {
+  return extractNodesWithIndex(options).nodes;
 }

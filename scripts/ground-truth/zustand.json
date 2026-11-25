@@ -1,0 +1,975 @@
+{
+  "schemaVersion": 1,
+  "repository": "pmndrs/zustand",
+  "commitSha": "9fed2eb2f3af672da9f7bf694b996df3831fc207",
+  "annotationMethod": "ai-assisted-blind-source-review-pending-independent-human-review",
+  "samplingRationale": "Purposive 10-of-49-file sample selected blind from the source inventory prior to running Archon, covering root and middleware barrels (src/index.ts, src/middleware.ts), core vanilla/React/traditional store implementations (src/vanilla.ts, src/react.ts, src/traditional.ts), middleware utilities (src/middleware/combine.ts, src/middleware/persist.ts), shallow equality helpers (src/react/shallow.ts, src/vanilla/shallow.ts), and path-aliased test usage (tests/vanilla/basic.test.ts).",
+  "scoringPolicy": {
+    "importsIdentity": "sourceQualifiedName + targetQualifiedName + edgeType",
+    "callsIdentity": "sourceQualifiedName + targetQualifiedName + edgeType + callSiteLine",
+    "scopeFiltering": "Filter predicted edges by emitted ExtractedNode.filePath membership in selectedSourceFiles; declarations in unselected files remain eligible targets.",
+    "uncertainCandidatePolicy": "Uncertain candidates must be predeclared with exact file/line/reason and are reported separately if predicted; zero uncertain candidates were needed in this manifest.",
+    "zeroDenominatorPolicy": "Report precision, recall, and F1 as N/A when denominator is 0; never coerce to 100%."
+  },
+  "selectedSourceFiles": [
+    "src/index.ts",
+    "src/vanilla.ts",
+    "src/react.ts",
+    "src/traditional.ts",
+    "src/middleware.ts",
+    "src/middleware/combine.ts",
+    "src/middleware/persist.ts",
+    "src/react/shallow.ts",
+    "src/vanilla/shallow.ts",
+    "tests/vanilla/basic.test.ts"
+  ],
+  "annotatedFileProvenance": [
+    {
+      "path": "src/index.ts",
+      "status": "complete",
+      "gitBlobId": "27b7a4f91feab99bfa3506541fb345b42b333952",
+      "sha256": "eb055d4a0e39f555ca5d160d05d5f58813cbbde672f713c6b27b0a3c5dba317c",
+      "byteLength": 56
+    },
+    {
+      "path": "src/vanilla.ts",
+      "status": "complete",
+      "gitBlobId": "a20f0f8ca5e70e49f86342c0284142341f534c07",
+      "sha256": "396aea7a580862e283f533afc74b26e0f2a9899a1e666c8b1d494aeebe20e7bc",
+      "byteLength": 3338
+    },
+    {
+      "path": "src/react.ts",
+      "status": "complete",
+      "gitBlobId": "cfaf29ab7ecee8cc14fc813b78c1555cb38dde12",
+      "sha256": "64c5896ffec1cfb62d6bec3b03e4e79393b5f9d407030702c43ac7adeda3c768",
+      "byteLength": 1770
+    },
+    {
+      "path": "src/traditional.ts",
+      "status": "complete",
+      "gitBlobId": "82983998105bb7c50de346df726c8d532bbbbb1a",
+      "sha256": "fd569a652683bdfc4cf88cddd3b45615b1ad097ba08e3b46ef039106120cfc65",
+      "byteLength": 2565
+    },
+    {
+      "path": "src/middleware.ts",
+      "status": "complete",
+      "gitBlobId": "47cb9c1fdfd5edbfc004758aa15b0c9ae0013b94",
+      "sha256": "aa282f85bff0263504e863250d2309375108d6c68cfe8032ed60eba947408192",
+      "byteLength": 502
+    },
+    {
+      "path": "src/middleware/combine.ts",
+      "status": "complete",
+      "gitBlobId": "e306a818da29e1ffd903740beea46f7e7d098397",
+      "sha256": "820148813b39c53ec432ace642d64f0fc07f737dcdfe6fc0529ac156c01d1137",
+      "byteLength": 478
+    },
+    {
+      "path": "src/middleware/persist.ts",
+      "status": "complete",
+      "gitBlobId": "b406f2d0df5de7f8c856c9e4e9fc67005b2b36bd",
+      "sha256": "5d3c2ee3678a8c3e8121f41619cf189e6e86263f854d7c6df9fb9d61cfb00201",
+      "byteLength": 12037
+    },
+    {
+      "path": "src/react/shallow.ts",
+      "status": "complete",
+      "gitBlobId": "dea18609daeafab99d85862e81a74c64ff40fe09",
+      "sha256": "edfe467e7bccaf32cd63ce9875a357cb08f9ada95bef594d3d2fdc4dbe885e3e",
+      "byteLength": 354
+    },
+    {
+      "path": "src/vanilla/shallow.ts",
+      "status": "complete",
+      "gitBlobId": "2621ef8eb908a5c5485a9518588fdd0dc72dd84d",
+      "sha256": "a9cc8e28e466566124388014b6289e06909fb671bfb38659a3fb6d3dfe5e7202",
+      "byteLength": 1979
+    },
+    {
+      "path": "tests/vanilla/basic.test.ts",
+      "status": "complete",
+      "gitBlobId": "a3428e97aded0bc357576d5304e709d95f60b014",
+      "sha256": "9caa6cbf458461eccacf79ecbd51daeddfc61ffd5a4323a06d6c51d5760590d1",
+      "byteLength": 3327
+    }
+  ],
+  "referencedTargetAndConfigProvenance": [
+    {
+      "path": "tsconfig.json",
+      "role": "config",
+      "gitBlobId": "d168b2d86f9e0d78f4637cb5470b60f6b31fcf90",
+      "sha256": "5ff1459b4039f46e2948b8f7a750c760fc5ee9348f8d7a604bec77d979ac1179",
+      "byteLength": 730
+    },
+    {
+      "path": "src/middleware/devtools.ts",
+      "role": "unselected-import-target",
+      "gitBlobId": "eb549523545effa688402300f6835aeac07e7064",
+      "sha256": "c6b0096a60fb09da02dd4bd54239a326d9ad59ee24b27c27dd22700a75c8792c",
+      "byteLength": 24213
+    },
+    {
+      "path": "src/middleware/redux.ts",
+      "role": "unselected-import-target",
+      "gitBlobId": "33dbee11cb3369a0a764ab902cf4487f379be8bb",
+      "sha256": "50d584b8945449efbb915125c6343b31d7c191ef4b67da86de6a802668e407f9",
+      "byteLength": 1329
+    },
+    {
+      "path": "src/middleware/ssrSafe.ts",
+      "role": "unselected-import-target",
+      "gitBlobId": "ac8fc78566da2aa873276dd706f0cfa440d429bd",
+      "sha256": "ad70fdb3c02fae8907b732d5b50c2f115a657dca27c9c0d3bec081146f477833",
+      "byteLength": 847
+    },
+    {
+      "path": "src/middleware/subscribeWithSelector.ts",
+      "role": "unselected-import-target",
+      "gitBlobId": "608c47047be58ec016403acd3cfb2b4a27e1d1ee",
+      "sha256": "237ec172e45a1563b4fb53435a65d37a127bafcd1379994c22728b1ba2375325",
+      "byteLength": 2409
+    }
+  ],
+  "expectedImports": [
+    {
+      "sourceQualifiedName": "file:src/index.ts",
+      "targetQualifiedName": "file:src/react.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "src/index.ts:2 -> export * from './react.ts'"
+    },
+    {
+      "sourceQualifiedName": "file:src/index.ts",
+      "targetQualifiedName": "file:src/vanilla.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "src/index.ts:1 -> export * from './vanilla.ts'"
+    },
+    {
+      "sourceQualifiedName": "file:src/middleware.ts",
+      "targetQualifiedName": "file:src/middleware/combine.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "src/middleware.ts:8 -> export { combine } from './middleware/combine.ts'"
+    },
+    {
+      "sourceQualifiedName": "file:src/middleware.ts",
+      "targetQualifiedName": "file:src/middleware/devtools.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "src/middleware.ts:2-6 -> export { devtools, type DevtoolsOptions, type NamedSet } from './middleware/devtools.ts'"
+    },
+    {
+      "sourceQualifiedName": "file:src/middleware.ts",
+      "targetQualifiedName": "file:src/middleware/persist.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "src/middleware.ts:9-16 -> export { persist, createJSONStorage, ... } from './middleware/persist.ts'"
+    },
+    {
+      "sourceQualifiedName": "file:src/middleware.ts",
+      "targetQualifiedName": "file:src/middleware/redux.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "src/middleware.ts:1 -> export { redux } from './middleware/redux.ts'"
+    },
+    {
+      "sourceQualifiedName": "file:src/middleware.ts",
+      "targetQualifiedName": "file:src/middleware/ssrSafe.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "src/middleware.ts:17 -> export { ssrSafe as unstable_ssrSafe } from './middleware/ssrSafe.ts'"
+    },
+    {
+      "sourceQualifiedName": "file:src/middleware.ts",
+      "targetQualifiedName": "file:src/middleware/subscribeWithSelector.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "src/middleware.ts:7 -> export { subscribeWithSelector } from './middleware/subscribeWithSelector.ts'"
+    },
+    {
+      "sourceQualifiedName": "file:src/middleware/combine.ts",
+      "targetQualifiedName": "file:src/vanilla.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "src/middleware/combine.ts:1 -> import type { StateCreator, StoreMutatorIdentifier } from '../vanilla.ts'"
+    },
+    {
+      "sourceQualifiedName": "file:src/middleware/persist.ts",
+      "targetQualifiedName": "file:src/vanilla.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "src/middleware/persist.ts:1-5 -> import type { StateCreator, StoreApi, StoreMutatorIdentifier } from '../vanilla.ts'"
+    },
+    {
+      "sourceQualifiedName": "file:src/react.ts",
+      "targetQualifiedName": "file:src/vanilla.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "src/react.ts:2 & 3-9 -> value + type imports from './vanilla.ts' deduplicated to one IMPORTS edge"
+    },
+    {
+      "sourceQualifiedName": "file:src/react/shallow.ts",
+      "targetQualifiedName": "file:src/vanilla/shallow.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "src/react/shallow.ts:2 -> import { shallow } from '../vanilla/shallow.ts'"
+    },
+    {
+      "sourceQualifiedName": "file:src/traditional.ts",
+      "targetQualifiedName": "file:src/vanilla.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "src/traditional.ts:3 & 4-10 -> value + type imports from './vanilla.ts' deduplicated to one IMPORTS edge"
+    },
+    {
+      "sourceQualifiedName": "file:tests/vanilla/basic.test.ts",
+      "targetQualifiedName": "file:src/vanilla.ts",
+      "edgeType": "IMPORTS",
+      "evidence": "tests/vanilla/basic.test.ts:2-3 -> value + type imports from 'zustand/vanilla' resolved via tsconfig.json paths to ./src/vanilla.ts"
+    }
+  ],
+  "expectedCalls": [
+    {
+      "sourceQualifiedName": "file:tests/vanilla/basic.test.ts",
+      "targetQualifiedName": "src/vanilla.ts::fn:createStore",
+      "edgeType": "CALLS",
+      "callSiteLine": 15,
+      "evidence": "tests/vanilla/basic.test.ts:15 -> createStore((...args) => ...) inside top-level it() callback"
+    },
+    {
+      "sourceQualifiedName": "file:tests/vanilla/basic.test.ts",
+      "targetQualifiedName": "src/vanilla.ts::fn:createStore",
+      "edgeType": "CALLS",
+      "callSiteLine": 47,
+      "evidence": "tests/vanilla/basic.test.ts:47 -> createStore<CounterState>((set) => ...) inside top-level it() callback"
+    },
+    {
+      "sourceQualifiedName": "file:tests/vanilla/basic.test.ts",
+      "targetQualifiedName": "src/vanilla.ts::fn:createStore",
+      "edgeType": "CALLS",
+      "callSiteLine": 63,
+      "evidence": "tests/vanilla/basic.test.ts:63 -> createStore<State>((_, get) => ...) inside top-level it() callback"
+    },
+    {
+      "sourceQualifiedName": "file:tests/vanilla/basic.test.ts",
+      "targetQualifiedName": "src/vanilla.ts::fn:createStore",
+      "edgeType": "CALLS",
+      "callSiteLine": 75,
+      "evidence": "tests/vanilla/basic.test.ts:75 -> createStore(() => initial) inside top-level it() callback"
+    },
+    {
+      "sourceQualifiedName": "file:tests/vanilla/basic.test.ts",
+      "targetQualifiedName": "src/vanilla.ts::fn:createStore",
+      "edgeType": "CALLS",
+      "callSiteLine": 87,
+      "evidence": "tests/vanilla/basic.test.ts:87 -> createStore<State>((set) => ...) inside top-level it() callback"
+    },
+    {
+      "sourceQualifiedName": "file:tests/vanilla/basic.test.ts",
+      "targetQualifiedName": "src/vanilla.ts::fn:createStore",
+      "edgeType": "CALLS",
+      "callSiteLine": 100,
+      "evidence": "tests/vanilla/basic.test.ts:100 -> createStore<number>(() => NaN) inside top-level it() callback"
+    },
+    {
+      "sourceQualifiedName": "file:tests/vanilla/basic.test.ts",
+      "targetQualifiedName": "src/vanilla.ts::fn:createStore",
+      "edgeType": "CALLS",
+      "callSiteLine": 110,
+      "evidence": "tests/vanilla/basic.test.ts:110 -> createStore<{ a: number } | { b: number }>(...) inside top-level it() callback"
+    },
+    {
+      "sourceQualifiedName": "file:tests/vanilla/basic.test.ts",
+      "targetQualifiedName": "src/vanilla.ts::fn:createStore",
+      "edgeType": "CALLS",
+      "callSiteLine": 123,
+      "evidence": "tests/vanilla/basic.test.ts:123 -> createStore<{ a: number } | null>(...) inside top-level it() callback"
+    },
+    {
+      "sourceQualifiedName": "file:tests/vanilla/basic.test.ts",
+      "targetQualifiedName": "src/vanilla.ts::fn:createStore",
+      "edgeType": "CALLS",
+      "callSiteLine": 133,
+      "evidence": "tests/vanilla/basic.test.ts:133 -> createStore<string | null>(() => 'value') inside top-level it() callback"
+    },
+    {
+      "sourceQualifiedName": "file:tests/vanilla/basic.test.ts",
+      "targetQualifiedName": "src/vanilla.ts::fn:createStore",
+      "edgeType": "CALLS",
+      "callSiteLine": 141,
+      "evidence": "tests/vanilla/basic.test.ts:141 -> createStore<number>(() => 1) inside top-level it() callback"
+    },
+    {
+      "sourceQualifiedName": "src/middleware/persist.ts::fn:createJSONStorage",
+      "targetQualifiedName": "src/middleware/persist.ts::fn:isPromiseLike",
+      "edgeType": "CALLS",
+      "callSiteLine": 51,
+      "evidence": "src/middleware/persist.ts:51 -> isPromiseLike(str) inside persistStorage.getItem closure"
+    },
+    {
+      "sourceQualifiedName": "src/middleware/persist.ts::fn:persistImpl",
+      "targetQualifiedName": "src/middleware/persist.ts::fn:createJSONStorage",
+      "edgeType": "CALLS",
+      "callSiteLine": 179,
+      "evidence": "src/middleware/persist.ts:179 -> createJSONStorage<S, void>(() => window.localStorage) inside persistImpl"
+    },
+    {
+      "sourceQualifiedName": "src/middleware/persist.ts::fn:persistImpl",
+      "targetQualifiedName": "src/middleware/persist.ts::fn:isPromiseLike",
+      "edgeType": "CALLS",
+      "callSiteLine": 271,
+      "evidence": "src/middleware/persist.ts:271 -> isPromiseLike(migration) inside nested hydrate().then() callback"
+    },
+    {
+      "sourceQualifiedName": "src/middleware/persist.ts::fn:persistImpl",
+      "targetQualifiedName": "src/middleware/persist.ts::fn:toThenable",
+      "edgeType": "CALLS",
+      "callSiteLine": 259,
+      "evidence": "src/middleware/persist.ts:259 -> toThenable(storage.getItem.bind(storage)) inside nested hydrate closure"
+    },
+    {
+      "sourceQualifiedName": "src/middleware/persist.ts::fn:toSyncThenable",
+      "targetQualifiedName": "src/middleware/persist.ts::fn:toThenable",
+      "edgeType": "CALLS",
+      "callSiteLine": 154,
+      "evidence": "src/middleware/persist.ts:154 -> toThenable(onFulfilled) inside returned thenable method"
+    },
+    {
+      "sourceQualifiedName": "src/middleware/persist.ts::fn:toThenable",
+      "targetQualifiedName": "src/middleware/persist.ts::fn:isPromiseLike",
+      "edgeType": "CALLS",
+      "callSiteLine": 164,
+      "evidence": "src/middleware/persist.ts:164 -> isPromiseLike(result) inside curried toThenable arrow"
+    },
+    {
+      "sourceQualifiedName": "src/middleware/persist.ts::fn:toThenable",
+      "targetQualifiedName": "src/middleware/persist.ts::fn:toSyncThenable",
+      "edgeType": "CALLS",
+      "callSiteLine": 164,
+      "evidence": "src/middleware/persist.ts:164 -> toSyncThenable(result as Result) inside curried toThenable arrow"
+    },
+    {
+      "sourceQualifiedName": "src/middleware/persist.ts::fn:toThenable",
+      "targetQualifiedName": "src/middleware/persist.ts::fn:toThenable",
+      "edgeType": "CALLS",
+      "callSiteLine": 169,
+      "evidence": "src/middleware/persist.ts:169 -> recursive toThenable(onRejected) inside catch thenable method"
+    },
+    {
+      "sourceQualifiedName": "src/react.ts::fn:create",
+      "targetQualifiedName": "src/react.ts::fn:createImpl",
+      "edgeType": "CALLS",
+      "callSiteLine": 64,
+      "evidence": "src/react.ts:64 -> createImpl(createState) inside create arrow (unwrapped from parenthesized as Create)"
+    },
+    {
+      "sourceQualifiedName": "src/react.ts::fn:createImpl",
+      "targetQualifiedName": "src/react.ts::fn:useStore",
+      "edgeType": "CALLS",
+      "callSiteLine": 56,
+      "evidence": "src/react.ts:56 -> useStore(api, selector) inside nested useBoundStore closure; targets collapsed overload group"
+    },
+    {
+      "sourceQualifiedName": "src/react.ts::fn:createImpl",
+      "targetQualifiedName": "src/vanilla.ts::fn:createStore",
+      "edgeType": "CALLS",
+      "callSiteLine": 54,
+      "evidence": "src/react.ts:54 -> createStore(createState) imported from ./vanilla.ts"
+    },
+    {
+      "sourceQualifiedName": "src/react/shallow.ts::fn:useShallow",
+      "targetQualifiedName": "src/vanilla/shallow.ts::fn:shallow",
+      "edgeType": "CALLS",
+      "callSiteLine": 8,
+      "evidence": "src/react/shallow.ts:8 -> shallow(prev.current, next) inside returned selector closure"
+    },
+    {
+      "sourceQualifiedName": "src/traditional.ts::fn:createWithEqualityFn",
+      "targetQualifiedName": "src/traditional.ts::fn:createWithEqualityFnImpl",
+      "edgeType": "CALLS",
+      "callSiteLine": 87,
+      "evidence": "src/traditional.ts:87 -> createWithEqualityFnImpl(createState, defaultEqualityFn) inside createWithEqualityFn arrow"
+    },
+    {
+      "sourceQualifiedName": "src/traditional.ts::fn:createWithEqualityFnImpl",
+      "targetQualifiedName": "src/traditional.ts::fn:useStoreWithEqualityFn",
+      "edgeType": "CALLS",
+      "callSiteLine": 75,
+      "evidence": "src/traditional.ts:75 -> useStoreWithEqualityFn(api, selector, equalityFn) inside nested closure; targets collapsed overload group"
+    },
+    {
+      "sourceQualifiedName": "src/traditional.ts::fn:createWithEqualityFnImpl",
+      "targetQualifiedName": "src/vanilla.ts::fn:createStore",
+      "edgeType": "CALLS",
+      "callSiteLine": 70,
+      "evidence": "src/traditional.ts:70 -> createStore(createState) imported from ./vanilla.ts"
+    },
+    {
+      "sourceQualifiedName": "src/vanilla.ts::fn:createStore",
+      "targetQualifiedName": "src/vanilla.ts::fn:createStoreImpl",
+      "edgeType": "CALLS",
+      "callSiteLine": 100,
+      "evidence": "src/vanilla.ts:100 -> createStoreImpl(createState) inside createStore arrow (unwrapped from parenthesized as CreateStore)"
+    },
+    {
+      "sourceQualifiedName": "src/vanilla/shallow.ts::fn:shallow",
+      "targetQualifiedName": "src/vanilla/shallow.ts::fn:compareEntries",
+      "edgeType": "CALLS",
+      "callSiteLine": 65,
+      "evidence": "src/vanilla/shallow.ts:65 -> compareEntries(valueA, valueB)"
+    },
+    {
+      "sourceQualifiedName": "src/vanilla/shallow.ts::fn:shallow",
+      "targetQualifiedName": "src/vanilla/shallow.ts::fn:compareEntries",
+      "edgeType": "CALLS",
+      "callSiteLine": 70,
+      "evidence": "src/vanilla/shallow.ts:70 -> compareEntries({ entries: ... }, { entries: ... }) on separate line from L65"
+    },
+    {
+      "sourceQualifiedName": "src/vanilla/shallow.ts::fn:shallow",
+      "targetQualifiedName": "src/vanilla/shallow.ts::fn:compareIterables",
+      "edgeType": "CALLS",
+      "callSiteLine": 67,
+      "evidence": "src/vanilla/shallow.ts:67 -> compareIterables(valueA, valueB)"
+    },
+    {
+      "sourceQualifiedName": "src/vanilla/shallow.ts::fn:shallow",
+      "targetQualifiedName": "src/vanilla/shallow.ts::fn:hasIterableEntries",
+      "edgeType": "CALLS",
+      "callSiteLine": 64,
+      "evidence": "src/vanilla/shallow.ts:64 -> hasIterableEntries(valueA) && hasIterableEntries(valueB) deduplicated to 1 edge on L64"
+    },
+    {
+      "sourceQualifiedName": "src/vanilla/shallow.ts::fn:shallow",
+      "targetQualifiedName": "src/vanilla/shallow.ts::fn:isIterable",
+      "edgeType": "CALLS",
+      "callSiteLine": 63,
+      "evidence": "src/vanilla/shallow.ts:63 -> isIterable(valueA) && isIterable(valueB) deduplicated to 1 edge on L63"
+    }
+  ],
+  "excludedOrUncertainCandidates": [
+    {
+      "filePath": "src/vanilla.ts",
+      "line": 64,
+      "expression": "new Set()",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Set constructor"
+    },
+    {
+      "filePath": "src/vanilla.ts",
+      "line": 71,
+      "expression": "(partial as (state: TState) => TState)(state)",
+      "classification": "excluded",
+      "reason": "hof_parameter",
+      "notes": "Caller-supplied updater callback parameter"
+    },
+    {
+      "filePath": "src/vanilla.ts",
+      "line": 73,
+      "expression": "Object.is(nextState, state)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Object.is"
+    },
+    {
+      "filePath": "src/vanilla.ts",
+      "line": 78,
+      "expression": "Object.assign({}, state, nextState)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Object.assign"
+    },
+    {
+      "filePath": "src/vanilla.ts",
+      "line": 79,
+      "expression": "listeners.forEach(...)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Set.prototype.forEach"
+    },
+    {
+      "filePath": "src/vanilla.ts",
+      "line": 79,
+      "expression": "listener(state, previousState)",
+      "classification": "excluded",
+      "reason": "hof_parameter",
+      "notes": "Callback parameter inside listeners.forEach"
+    },
+    {
+      "filePath": "src/vanilla.ts",
+      "line": 89,
+      "expression": "listeners.add(listener)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Set.prototype.add"
+    },
+    {
+      "filePath": "src/vanilla.ts",
+      "line": 91,
+      "expression": "listeners.delete(listener)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Set.prototype.delete"
+    },
+    {
+      "filePath": "src/vanilla.ts",
+      "line": 95,
+      "expression": "createState(setState, getState, api)",
+      "classification": "excluded",
+      "reason": "hof_parameter",
+      "notes": "Caller-supplied StateCreator parameter"
+    },
+    {
+      "filePath": "src/react.ts",
+      "line": 1,
+      "expression": "import React from 'react'",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External package import"
+    },
+    {
+      "filePath": "src/react.ts",
+      "line": 30,
+      "expression": "React.useSyncExternalStore(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External React hook"
+    },
+    {
+      "filePath": "src/react.ts",
+      "line": 32,
+      "expression": "React.useCallback(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External React hook"
+    },
+    {
+      "filePath": "src/react.ts",
+      "line": 32,
+      "expression": "selector(api.getState())",
+      "classification": "excluded",
+      "reason": "hof_parameter",
+      "notes": "HOF selector parameter; api.getState() is interface-only ReadonlyStoreApi method"
+    },
+    {
+      "filePath": "src/react.ts",
+      "line": 32,
+      "expression": "api.getState()",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "Typed via Pick<StoreApi<T>, ...> interface"
+    },
+    {
+      "filePath": "src/react.ts",
+      "line": 33,
+      "expression": "selector(api.getInitialState())",
+      "classification": "excluded",
+      "reason": "hof_parameter",
+      "notes": "HOF selector parameter"
+    },
+    {
+      "filePath": "src/react.ts",
+      "line": 33,
+      "expression": "api.getInitialState()",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "Typed via Pick<StoreApi<T>, ...> interface"
+    },
+    {
+      "filePath": "src/react.ts",
+      "line": 35,
+      "expression": "React.useDebugValue(slice)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External React hook"
+    },
+    {
+      "filePath": "src/traditional.ts",
+      "line": 1,
+      "expression": "import React from 'react'",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External package import"
+    },
+    {
+      "filePath": "src/traditional.ts",
+      "line": 2,
+      "expression": "import useSyncExternalStoreExports from 'use-sync-external-store/shim/with-selector'",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External package import"
+    },
+    {
+      "filePath": "src/traditional.ts",
+      "line": 36,
+      "expression": "useSyncExternalStoreWithSelector(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "Destructured from external package default import"
+    },
+    {
+      "filePath": "src/traditional.ts",
+      "line": 43,
+      "expression": "React.useDebugValue(slice)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External React hook"
+    },
+    {
+      "filePath": "src/traditional.ts",
+      "line": 77,
+      "expression": "Object.assign(useBoundStoreWithEqualityFn, api)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Object.assign"
+    },
+    {
+      "filePath": "src/middleware/combine.ts",
+      "line": 14,
+      "expression": "Object.assign(...)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Object.assign"
+    },
+    {
+      "filePath": "src/middleware/combine.ts",
+      "line": 14,
+      "expression": "(create as any)(...args)",
+      "classification": "excluded",
+      "reason": "hof_parameter",
+      "notes": "HOF StateCreator parameter cast to any"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 37,
+      "expression": "getStorage()",
+      "classification": "excluded",
+      "reason": "hof_parameter",
+      "notes": "Caller-supplied storage factory parameter"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 48,
+      "expression": "JSON.parse(str, options?.reviver)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in JSON.parse"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 50,
+      "expression": "storage.getItem(name)",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "Interface-only StateStorage.getItem"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 54,
+      "expression": "parse(str)",
+      "classification": "excluded",
+      "reason": "other",
+      "notes": "Unmapped nested local arrow variable inside createJSONStorage"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 57,
+      "expression": "storage.setItem(name, JSON.stringify(...))",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "Interface-only StateStorage.setItem and built-in JSON.stringify"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 58,
+      "expression": "storage.removeItem(name)",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "Interface-only StateStorage.removeItem"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 154,
+      "expression": "toThenable(onFulfilled)(value)",
+      "classification": "excluded",
+      "reason": "other",
+      "notes": "Outer invocation calls anonymous closure returned by toThenable (inner toThenable call is scored)"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 163,
+      "expression": "fn(input)",
+      "classification": "excluded",
+      "reason": "hof_parameter",
+      "notes": "Caller-supplied fn parameter"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 169,
+      "expression": "toThenable(onRejected)(error)",
+      "classification": "excluded",
+      "reason": "other",
+      "notes": "Outer invocation calls anonymous closure returned by toThenable (inner recursive toThenable call is scored)"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 198,
+      "expression": "config(...)",
+      "classification": "excluded",
+      "reason": "hof_parameter",
+      "notes": "Caller-supplied store initializer parameter (also at L225)"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 211,
+      "expression": "options.partialize({ ...get() })",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "PersistOptions callback property merged with inline default; get() is HOF param"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 212,
+      "expression": "(storage as PersistStorage<S, unknown>).setItem(...)",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "Interface-only PersistStorage.setItem"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 221,
+      "expression": "savedSetState(...)",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "Copied from interface StoreApi.setState"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 222,
+      "expression": "setItem()",
+      "classification": "excluded",
+      "reason": "other",
+      "notes": "Unmapped nested local arrow variable inside persistImpl (also at L228, L298)"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 256,
+      "expression": "options.onRehydrateStorage?.(...)",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "Interface-only PersistOptions callback"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 267,
+      "expression": "options.migrate(...)",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "Interface-only PersistOptions callback"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 291,
+      "expression": "options.merge(...)",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "PersistOptions callback merged with inline default"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 306,
+      "expression": "postRehydrationCallback?.(...)",
+      "classification": "excluded",
+      "reason": "hof_parameter",
+      "notes": "Callback returned by options.onRehydrateStorage (also at L324)"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 347,
+      "expression": "hydrate()",
+      "classification": "excluded",
+      "reason": "other",
+      "notes": "Unmapped nested local arrow variable inside persistImpl (also at L370); Promise.resolve/reject are stdlib"
+    },
+    {
+      "filePath": "src/react/shallow.ts",
+      "line": 1,
+      "expression": "import React from 'react'",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External package import"
+    },
+    {
+      "filePath": "src/react/shallow.ts",
+      "line": 5,
+      "expression": "React.useRef<U>(undefined)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External React hook"
+    },
+    {
+      "filePath": "src/react/shallow.ts",
+      "line": 7,
+      "expression": "selector(state)",
+      "classification": "excluded",
+      "reason": "hof_parameter",
+      "notes": "Caller-supplied selector parameter"
+    },
+    {
+      "filePath": "src/vanilla/shallow.ts",
+      "line": 16,
+      "expression": "new Map(valueA.entries())",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Map constructor and structural parameter method entries() (also L17)"
+    },
+    {
+      "filePath": "src/vanilla/shallow.ts",
+      "line": 22,
+      "expression": "mapB.has(key) / Object.is / mapB.get(key)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Map and Object methods"
+    },
+    {
+      "filePath": "src/vanilla/shallow.ts",
+      "line": 34,
+      "expression": "valueA[Symbol.iterator]()",
+      "classification": "excluded",
+      "reason": "dynamic_dispatch",
+      "notes": "Computed Symbol.iterator element access on stdlib Iterable (also L35)"
+    },
+    {
+      "filePath": "src/vanilla/shallow.ts",
+      "line": 36,
+      "expression": "iteratorA.next()",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Iterator.next (also L37, L42, L43)"
+    },
+    {
+      "filePath": "src/vanilla/shallow.ts",
+      "line": 39,
+      "expression": "Object.is(nextA.value, nextB.value)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Object.is"
+    },
+    {
+      "filePath": "src/vanilla/shallow.ts",
+      "line": 49,
+      "expression": "Object.is(valueA, valueB)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Object.is"
+    },
+    {
+      "filePath": "src/vanilla/shallow.ts",
+      "line": 60,
+      "expression": "Object.getPrototypeOf(...)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Object.getPrototypeOf"
+    },
+    {
+      "filePath": "src/vanilla/shallow.ts",
+      "line": 71,
+      "expression": "Object.entries(valueA)",
+      "classification": "excluded",
+      "reason": "stdlib",
+      "notes": "Built-in Object.entries (also L72)"
+    },
+    {
+      "filePath": "tests/vanilla/basic.test.ts",
+      "line": 1,
+      "expression": "import { afterEach, expect, it, vi } from 'vitest'",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "External test runner import"
+    },
+    {
+      "filePath": "tests/vanilla/basic.test.ts",
+      "line": 6,
+      "expression": "vi.mock('react', () => ({}))",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "Vitest mock helper"
+    },
+    {
+      "filePath": "tests/vanilla/basic.test.ts",
+      "line": 9,
+      "expression": "afterEach(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "Vitest lifecycle hook"
+    },
+    {
+      "filePath": "tests/vanilla/basic.test.ts",
+      "line": 13,
+      "expression": "it(...) / expect(...)",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "Vitest test registration and assertion calls throughout file"
+    },
+    {
+      "filePath": "tests/vanilla/basic.test.ts",
+      "line": 49,
+      "expression": "set((state) => ({ count: state.count + 1 }))",
+      "classification": "excluded",
+      "reason": "hof_parameter",
+      "notes": "StateCreator set callback parameter (also L89)"
+    },
+    {
+      "filePath": "tests/vanilla/basic.test.ts",
+      "line": 51,
+      "expression": "store.getState().inc()",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "StoreApi.getState is interface-only; CounterState.inc is a type-literal method signature"
+    },
+    {
+      "filePath": "tests/vanilla/basic.test.ts",
+      "line": 65,
+      "expression": "get()",
+      "classification": "excluded",
+      "reason": "hof_parameter",
+      "notes": "StateCreator get callback parameter"
+    },
+    {
+      "filePath": "tests/vanilla/basic.test.ts",
+      "line": 69,
+      "expression": "store.getState().getState1() / getState2()",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "StoreApi.getState and local State type signatures (also L66, L70)"
+    },
+    {
+      "filePath": "tests/vanilla/basic.test.ts",
+      "line": 76,
+      "expression": "store.setState / store.getInitialState / store.subscribe",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "Interface-only StoreApi methods (also L77, L90, L93-L96, L103-L104, L117, L119, L127, L129, L135, L137, L142, L146)"
+    },
+    {
+      "filePath": "tests/vanilla/basic.test.ts",
+      "line": 101,
+      "expression": "vi.fn()",
+      "classification": "excluded",
+      "reason": "external_package",
+      "notes": "Vitest mock function factory"
+    },
+    {
+      "filePath": "tests/vanilla/basic.test.ts",
+      "line": 144,
+      "expression": "inc()",
+      "classification": "excluded",
+      "reason": "other",
+      "notes": "Unmapped nested local arrow variable declared inside it() callback at L142"
+    },
+    {
+      "filePath": "src/middleware/persist.ts",
+      "line": 386,
+      "expression": "declare module '../vanilla'",
+      "classification": "excluded",
+      "reason": "interface_or_ambient",
+      "notes": "Module augmentation declaration (not an ImportDeclaration/ExportDeclaration; ./vanilla.ts is already imported at L1-5)"
+    }
+  ],
+  "notes": [
+    "Blind annotation completed from pinned zustand-sources.json blobs prior to any Archon analysis run.",
+    "Zero uncertain candidates identified across the 10 selected files.",
+    "Frozen SHA-256 digest of this manifest is recorded externally after Prettier formatting and human review."
+  ]
+}
