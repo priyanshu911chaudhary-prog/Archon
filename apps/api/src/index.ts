@@ -1,5 +1,4 @@
-import { CORE_ENGINE_ID } from '@archon/core';
-import { ARCHON_VERSION } from '@archon/shared';
+import { ARCHON_VERSION, CORE_ENGINE_ID } from '@archon/shared';
 
 export const API_SERVICE_INFO = {
   service: 'api',

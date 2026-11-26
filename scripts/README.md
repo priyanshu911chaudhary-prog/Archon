@@ -584,3 +584,95 @@ if ($LASTEXITCODE -ne 0) { throw "integration tests failed" }
 ```
 
 Commit evaluator source, tests, documentation and the frozen reference manifests only. Keep downloaded target repositories, generated source bundles, raw run records, generated reports, dependency directories, compiled output, temporary diagnostics and credentials outside the tracked source tree. Do not change the frozen denominators or hashes to improve results.
+
+## Parser Subprocess Isolation Benchmarks (Step 4.3)
+
+The preceding evaluation measurements and Step 4.2 verification counts are retained as historical records.
+
+Step 4.3 adds an isolated parser runner, production worker integration and resource validation. The latest local implementation baseline is 283 unit tests and 10 integration tests. See the [Phase 4 parser isolation report](../docs/phase-4-parser-isolation.md) for current measurements and limitations.
+
+### Windows benchmark wrapper
+
+Build the workspace first and prepare a pinned local repository and matching external source bundle using the preceding evaluation instructions.
+
+The `scripts/benchmark-parser-windows.ps1` wrapper supports:
+
+| Parameter        | Purpose                                |
+| ---------------- | -------------------------------------- |
+| RepoId           | Frozen repository identifier           |
+| RepoDir          | Verified local checkout                |
+| BundlePath       | Matching external source bundle        |
+| RunDir           | Fresh external output directory        |
+| RunId            | Unique benchmark identifier            |
+| SkipLibFiles     | Disable standard library loading       |
+| RunnerMode       | instrumented or public                 |
+| MaxOldSpaceMb    | Child V8 old-space limit               |
+| ParserTimeoutMs  | Parser timeout                         |
+| MaxResponseBytes | Serialized response budget             |
+| Repetitions      | Number of sequential parser executions |
+| SampleIntervalMs | Windows monitoring interval            |
+
+Example using the existing local Zustand snapshot:
+
+```powershell
+npm run build
+if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+
+$runId = "zustand-without-lib-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+$runDir = Join-Path 'C:\dev\archon-eval\results' $runId
+
+& .\scripts\benchmark-parser-windows.ps1 `
+    -RepoId zustand `
+    -RepoDir C:\dev\archon-eval\zustand `
+    -BundlePath C:\dev\archon-eval\source-bundles\zustand-sources.json `
+    -RunDir $runDir `
+    -RunId $runId `
+    -SkipLibFiles `
+    -RunnerMode instrumented `
+    -MaxOldSpaceMb 256 `
+    -ParserTimeoutMs 60000 `
+    -MaxResponseBytes 33554432 `
+    -Repetitions 1 `
+    -SampleIntervalMs 25
+```
+
+Use distinct output directories and run IDs. Omit `-SkipLibFiles` for a library-enabled comparison.
+
+### Compiled benchmark CLI contracts
+
+The lightweight measured parent accepts:
+
+```text
+node scripts/dist/benchmark-parser-parent.js
+  --inventory <file>
+  --out-record <file>
+  --out-dir <dir>
+  [--mode instrumented|public]
+  [--repetitions <n>]
+  [--skip-lib-files]
+  [--max-old-space-mb <n>]
+  [--timeout-ms <n>]
+  [--max-response-bytes <n>]
+```
+
+The independent inventory, scoring and aggregation CLI accepts:
+
+```text
+node scripts/dist/benchmark-parser-score.js prepare
+  --repo <id> --repo-dir <dir> --bundle <file> --out <file>
+
+node scripts/dist/benchmark-parser-score.js score
+  --run-dir <dir> --run-id <id>
+  --parent-record <file> [--monitor <file>] --out <file>
+
+node scripts/dist/benchmark-parser-score.js aggregate
+  --run <scored1.json> [--run ...]
+  [--expected-runs-per-repo 3]
+  [--out-json <file>] [--out-md <file>]
+```
+
+The scorer evaluates persisted parser output rather than rerunning static analysis.
+
+Aggregate compatible independent runs only. Keep library-enabled and library-disabled configurations separate. Sequential retention sessions require separate interpretation.
+
+The external Linux container controllers, retention orchestrator and raw benchmark results remain outside the repository.

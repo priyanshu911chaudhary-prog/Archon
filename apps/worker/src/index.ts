@@ -1,6 +1,4 @@
-import { CORE_ENGINE_ID } from '@archon/core';
-import { ARCHON_VERSION } from '@archon/shared';
-
+import { ARCHON_VERSION, CORE_ENGINE_ID } from '@archon/shared';
 export const WORKER_SERVICE_INFO = {
   service: 'worker',
   version: ARCHON_VERSION,
@@ -36,7 +34,6 @@ export {
   type CreateIngestionProcessorDependencies,
   type ExtractRepoFn,
   type IngestionProcessorJob,
-  type ParseWorkspaceFn,
 } from './processor.js';
 
 export {
@@ -57,7 +54,6 @@ export {
   createIngestionWorker,
   enqueueIngestionJob,
   shutdownWorkerResources,
-  type CloseWorkerResult,
   type CreateIngestionQueueOptions,
   type CreateIngestionWorkerOptions,
   type EnqueuedIngestionJobResult,
@@ -81,3 +77,64 @@ export {
   FAST_FAIL_RECONNECT_BASE_MS,
   FAST_FAIL_RECONNECT_MAX_MS,
 } from './redis.js';
+
+export {
+  DEFAULT_PARSER_KILL_CONFIRMATION_MS,
+  DEFAULT_PARSER_MAX_DIAGNOSTIC_BYTES,
+  DEFAULT_PARSER_MAX_OLD_SPACE_MB,
+  DEFAULT_PARSER_TERMINATE_GRACE_MS,
+  DEFAULT_PARSER_TIMEOUT_MS,
+  PARSER_RUNNER_ERROR_CODES,
+  ParserRunnerError,
+  createParserRunner,
+  type ParserRunInput,
+  type ParserRunMetrics,
+  type ParserRunResult,
+  type ParserRunner,
+  type ParserRunnerErrorCode,
+  type ParserRunnerFatalEvent,
+  type ParserRunnerOptions,
+  type ParserRunnerState,
+} from './parser-runner.js';
+
+export {
+  PARSER_PERSISTED_ERROR_CODES,
+  PRODUCTION_PARSER_CONFIG,
+  ParserIntegrationError,
+  classifyParserRunnerError,
+  createProductionParserAdapter,
+  noopAnalysisResultHandoff,
+  preflightProductionParserEntrypoint,
+  resolveProductionParserLimitsFromEnv,
+  validateProductionParserLimits,
+  type AnalysisResultHandoff,
+  type AnalysisResultHandoffContext,
+  type ClassifiedParserError,
+  type ParseWorkspaceRunOptions,
+  type ParserFailureDisposition,
+  type ParserPersistedErrorCode,
+  type ParserWorkspaceInput,
+  type ProductionParserAdapter,
+  type ProductionParserAdapterOptions,
+  type ProductionParserLimits,
+  type ProductionParserLogEvent,
+  type ResolvedProductionParserLimits,
+  type SafeParserErrorLogRecord,
+  type SafeParserFatalNotification,
+  type ValidatedAnalysisResult,
+  type ValidatedAnalysisSummary,
+} from './parser-integration.js';
+
+export { SAFE_TARBALL_CANCELLED_MESSAGE } from './extractor/github-tarball.js';
+export { IngestionCancelledError, type IngestionParserAdapter } from './processor.js';
+export type { ShutdownWorkerResourcesResult, WorkerCloseObservation } from './queue.js';
+export {
+  createWorkerServiceLifecycle,
+  type ShutdownOutcome,
+  type ShutdownTriggerReason,
+  type SignalTargetLike,
+  type UnconfirmedShutdownInfo,
+  type WorkerServiceLifecycle,
+  type WorkerServiceLifecycleOptions,
+  type WorkerServiceLifecyclePhase,
+} from './lifecycle.js';

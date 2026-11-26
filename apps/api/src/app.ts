@@ -31,6 +31,7 @@ export interface BuildAppDependencies {
   readonly rateLimitStore?: RateLimitStoreConfig;
   readonly rateLimitWindowMs?: number;
   readonly staleJobThresholdMs?: number;
+  readonly onAppCreated?: (app: FastifyInstance) => void;
   readonly now?: () => Date;
 }
 
@@ -49,59 +50,79 @@ export async function buildApp(deps: BuildAppDependencies): Promise<FastifyInsta
     bodyLimit: API_BODY_LIMIT_BYTES,
   });
 
-  app.setValidatorCompiler(validatorCompiler);
-  app.setSerializerCompiler(serializerCompiler);
+  deps.onAppCreated?.(app);
 
-  await app.register(helmet, {
-    contentSecurityPolicy: false,
-  });
+  try {
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
 
-  await app.register(cors, {
-    origin: (origin, callback) => {
-      // Non-browser clients send no Origin header; allow them (CORS only governs browsers).
-      if (origin === undefined || origin === deps.env.WEB_ORIGIN) {
-        callback(null, true);
-        return;
-      }
-      callback(null, false);
-    },
-    methods: ['GET', 'POST', 'OPTIONS'],
-  });
+    await app.register(helmet, {
+      contentSecurityPolicy: false,
+    });
 
-  const store = deps.rateLimitStore ?? createInMemoryRateLimitStore();
-  await app.register(rateLimit, buildRateLimitPluginOptions(store));
+    await app.register(cors, {
+      origin: (origin, callback) => {
+        // Non-browser clients send no Origin header; allow them (CORS only governs browsers).
+        if (origin === undefined || origin === deps.env.WEB_ORIGIN) {
+          callback(null, true);
+          return;
+        }
+        callback(null, false);
+      },
+      methods: ['GET', 'POST', 'OPTIONS'],
+    });
 
-  registerErrorHandlers(app);
+    const store = deps.rateLimitStore ?? createInMemoryRateLimitStore();
+    await app.register(rateLimit, buildRateLimitPluginOptions(store));
 
-  const nowFn = deps.now ?? (() => new Date());
-  const startedAtMs = nowFn().getTime();
+    registerErrorHandlers(app);
 
-  const ingestionService = createIngestionService({
-    repository: deps.repository,
-    githubPrecheck: deps.githubPrecheck,
-    enqueuer: deps.enqueuer,
-    logger: deps.logger,
-    staleJobThresholdMs: deps.staleJobThresholdMs,
-    now: nowFn,
-  });
+    const nowFn = deps.now ?? (() => new Date());
+    const startedAtMs = nowFn().getTime();
 
-  registerHealthRoute(app, {
-    checkDbHealth: deps.checkDbHealth,
-    checkRedisHealth: deps.checkRedisHealth,
-    workerMode: deps.env.RUN_EMBEDDED_WORKER ? 'embedded' : 'external',
-    startedAtMs,
-    now: () => nowFn().getTime(),
-  });
+    const ingestionService = createIngestionService({
+      repository: deps.repository,
+      githubPrecheck: deps.githubPrecheck,
+      enqueuer: deps.enqueuer,
+      logger: deps.logger,
+      staleJobThresholdMs: deps.staleJobThresholdMs,
+      now: nowFn,
+    });
 
-  registerReposRoute(app, {
-    ingestionService,
-    rateLimitPerHour: deps.env.INGEST_RATE_LIMIT_PER_HOUR,
-    rateLimitWindowMs: deps.rateLimitWindowMs,
-  });
+    registerHealthRoute(app, {
+      checkDbHealth: deps.checkDbHealth,
+      checkRedisHealth: deps.checkRedisHealth,
+      workerMode: deps.env.RUN_EMBEDDED_WORKER ? 'embedded' : 'external',
+      startedAtMs,
+      now: () => nowFn().getTime(),
+    });
 
-  registerJobsRoute(app, {
-    ingestionService,
-  });
+    registerReposRoute(app, {
+      ingestionService,
+      rateLimitPerHour: deps.env.INGEST_RATE_LIMIT_PER_HOUR,
+      rateLimitWindowMs: deps.rateLimitWindowMs,
+    });
 
-  return app;
+    registerJobsRoute(app, {
+      ingestionService,
+    });
+
+    return await app;
+  } catch (err) {
+    // When caller owns the Fastify instance via `onAppCreated`, defer closing to its coordinated
+    // lifecycle shutdown so an `app.close()` rejection is never silently masked.
+    if (deps.onAppCreated !== undefined) {
+      throw err;
+    }
+    try {
+      await app.close();
+    } catch (closeErr) {
+      throw new AggregateError(
+        [err, closeErr],
+        'Failed to construct Fastify app and failed to close partial instance.',
+        { cause: closeErr },
+      );
+    }
+    throw err;
+  }
 }

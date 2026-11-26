@@ -20,7 +20,7 @@ import { createLogger, parseEnv, type AppEnv } from '@archon/shared';
 import type { FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { API_BODY_LIMIT_BYTES, buildApp } from './app.js';
+import { API_BODY_LIMIT_BYTES, buildApp, type BuildAppDependencies } from './app.js';
 import {
   GitHubPrecheckError,
   type GitHubPrecheckClient,
@@ -406,6 +406,8 @@ describe('Archon Fastify API (app.inject route tests)', () => {
       githubPrecheck?: Pick<GitHubPrecheckClient, 'precheckRepository'>;
       enqueuer?: IngestionJobEnqueuer;
       now?: () => Date;
+
+      readonly onAppCreated?: BuildAppDependencies['onAppCreated'];
     } = {},
   ) {
     const env = makeTestEnv(overrides.envOverrides);
@@ -429,6 +431,8 @@ describe('Archon Fastify API (app.inject route tests)', () => {
       rateLimitStore: overrides.rateLimitStore,
       enqueuer: spyEnqueuer,
       now: overrides.now,
+
+      ...(overrides.onAppCreated !== undefined ? { onAppCreated: overrides.onAppCreated } : {}),
     });
 
     appsToClose.push(app);
@@ -911,5 +915,56 @@ describe('Archon Fastify API (app.inject route tests)', () => {
 
     expect(res.statusCode).toBe(202);
     expect(warnings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('invokes onAppCreated during construction before buildApp resolves and allows closing via the registered callback', async () => {
+    const events: string[] = [];
+    const capturedInstances: unknown[] = [];
+    const ownership: {
+      close: (() => Promise<void>) | undefined;
+      closed: boolean;
+    } = {
+      close: undefined,
+      closed: false,
+    };
+
+    let builtApp: { close(): PromiseLike<unknown> } | undefined;
+    try {
+      const { app } = await createTestApp({
+        onAppCreated: (createdApp) => {
+          events.push('onAppCreated');
+          capturedInstances.push(createdApp);
+          ownership.close = async () => {
+            await createdApp.close();
+          };
+        },
+      });
+      builtApp = app;
+      events.push('buildAppResolved');
+
+      expect(capturedInstances).toHaveLength(1);
+      expect(capturedInstances[0]).toBe(app);
+      expect(events).toEqual(['onAppCreated', 'buildAppResolved']);
+
+      await app.listen({ host: '127.0.0.1', port: 0 });
+      expect(app.server.listening).toBe(true);
+
+      expect(ownership.close).toBeDefined();
+      if (ownership.close === undefined) {
+        throw new Error('Expected onAppCreated to register Fastify close callback.');
+      }
+      await ownership.close();
+      ownership.closed = true;
+
+      expect(app.server.listening).toBe(false);
+    } finally {
+      if (!ownership.closed) {
+        if (ownership.close !== undefined) {
+          await ownership.close();
+        } else if (builtApp !== undefined) {
+          await builtApp.close();
+        }
+      }
+    }
   });
 });

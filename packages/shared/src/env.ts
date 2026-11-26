@@ -2,6 +2,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { config as loadDotenv } from 'dotenv';
 import { z } from 'zod';
+import { DEFAULT_MAX_SUPPORTED_FILES, DEFAULT_MAX_TOTAL_BYTES } from './analysis-contracts.js';
+
+const MAX_REPO_SIZE_MB_LIMIT = DEFAULT_MAX_TOTAL_BYTES / (1024 * 1024);
 
 export interface EnvValidationIssue {
   readonly path: string;
@@ -137,8 +140,8 @@ export const envSchema = z
     WEB_ORIGIN: webOriginSchema,
     INGEST_RATE_LIMIT_PER_HOUR: intFromEnv(1, 1000, 5),
     TRUST_PROXY_HOPS: intFromEnv(0, 5, 1),
-    MAX_SUPPORTED_FILES: intFromEnv(1, 10000, 500),
-    MAX_REPO_SIZE_MB: intFromEnv(1, 1000, 50),
+    MAX_SUPPORTED_FILES: intFromEnv(1, DEFAULT_MAX_SUPPORTED_FILES, DEFAULT_MAX_SUPPORTED_FILES),
+    MAX_REPO_SIZE_MB: intFromEnv(1, MAX_REPO_SIZE_MB_LIMIT, MAX_REPO_SIZE_MB_LIMIT),
     HUB_THRESHOLD: intFromEnv(1, 10000, 30),
     RUN_EMBEDDED_WORKER: booleanFromEnv(false),
   })
