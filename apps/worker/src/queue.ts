@@ -153,41 +153,70 @@ export function createIngestionWorker(options: CreateIngestionWorkerOptions): In
   return worker;
 }
 
-export interface CloseWorkerResult {
-  readonly timedOut: boolean;
-}
+export type WorkerCloseObservation =
+  | {
+      readonly closed: true;
+      readonly timedOut: false;
+    }
+  | {
+      readonly closed: false;
+      readonly timedOut: true;
+      readonly pendingClose: Promise<void>;
+    }
+  | {
+      readonly closed: false;
+      readonly timedOut: false;
+      readonly error: unknown;
+    };
 
 /**
- * Closes a BullMQ Worker gracefully with a hard timeout so a stuck job can never
- * block process exit during SIGINT/SIGTERM.
+ * Initiates a single graceful BullMQ `worker.close()` call and observes it up to `timeoutMs`.
+ *
+ * Confirmed BullMQ 6.7.8 behavior: `Worker.close(force)` caches `this.closing` on the first
+ * invocation, so calling `worker.close(true)` later returns the original closing promise
+ * rather than escalating. This helper therefore NEVER issues a fake second `worker.close(true)`.
+ * On timeout, it returns `{ closed: false, timedOut: true, pendingClose }` so callers can
+ * preserve ownership without prematurely closing Redis/PostgreSQL or dropping the close promise.
  */
 export async function closeWorkerWithTimeout(
   worker: Pick<IngestionWorker, 'close'>,
   timeoutMs: number = DEFAULT_WORKER_CLOSE_TIMEOUT_MS,
-): Promise<CloseWorkerResult> {
-  const closePromise = worker.close();
-  // Prevent unhandled rejection if closePromise rejects after timeout wins the race
+): Promise<WorkerCloseObservation> {
+  let closePromise: Promise<void>;
+  try {
+    closePromise = worker.close();
+  } catch (err: unknown) {
+    return { closed: false, timedOut: false, error: err };
+  }
+
+  // Prevent unhandled rejection if closePromise rejects after observation timeout elapses
   closePromise.catch(() => undefined);
 
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<'timeout'>((resolve) => {
+  const timeoutPromise = new Promise<{ readonly kind: 'timeout' }>((resolve) => {
     timer = setTimeout(() => {
-      resolve('timeout');
+      resolve({ kind: 'timeout' });
     }, timeoutMs);
     timer.unref();
   });
 
+  const settledPromise = closePromise.then(
+    (): { readonly kind: 'closed' } => ({ kind: 'closed' }),
+    (err: unknown): { readonly kind: 'rejected'; readonly error: unknown } => ({
+      kind: 'rejected',
+      error: err,
+    }),
+  );
+
   try {
-    const outcome = await Promise.race([
-      closePromise.then(() => 'closed' as const),
-      timeoutPromise,
-    ]);
-    if (outcome === 'timeout') {
-      const forceClose = worker.close(true);
-      forceClose.catch(() => undefined);
-      return { timedOut: true };
+    const outcome = await Promise.race([settledPromise, timeoutPromise]);
+    if (outcome.kind === 'closed') {
+      return { closed: true, timedOut: false };
     }
-    return { timedOut: false };
+    if (outcome.kind === 'rejected') {
+      return { closed: false, timedOut: false, error: outcome.error };
+    }
+    return { closed: false, timedOut: true, pendingClose: closePromise };
   } finally {
     if (timer !== undefined) {
       clearTimeout(timer);
@@ -207,41 +236,18 @@ export interface ShutdownWorkerResourcesInput {
   readonly logger?: Pick<Logger, 'info' | 'warn' | 'error'>;
 }
 
-/**
- * Shared ordered graceful shutdown for both standalone worker.ts and embedded API mode:
- * 1. worker.close() with timeout
- * 2. queue.close()
- * 3. fast-fail Redis clients
- * 4. Postgres pool last (so final stage updates always commit cleanly)
- */
-export async function shutdownWorkerResources(
-  input: ShutdownWorkerResourcesInput,
-): Promise<{ readonly exitCode: 0 | 1 }> {
+async function closeDownstreamResources(input: ShutdownWorkerResourcesInput): Promise<0 | 1> {
   let exitCode: 0 | 1 = 0;
-
-  if (input.worker !== undefined) {
-    input.logger?.info('Shutdown step 1/4: closing BullMQ worker');
-    try {
-      const result = await closeWorkerWithTimeout(
-        input.worker,
-        input.workerCloseTimeoutMs ?? DEFAULT_WORKER_CLOSE_TIMEOUT_MS,
-      );
-      if (result.timedOut) {
-        input.logger?.warn('BullMQ worker close timed out; forced close triggered');
-        exitCode = 1;
-      }
-    } catch (err) {
-      input.logger?.error({ err }, 'Error closing BullMQ worker');
-      exitCode = 1;
-    }
-  }
 
   if (input.queue !== undefined) {
     input.logger?.info('Shutdown step 2/4: closing BullMQ queue');
     try {
       await input.queue.close();
     } catch (err) {
-      input.logger?.error({ err }, 'Error closing BullMQ queue');
+      input.logger?.error(
+        { errorMessage: err instanceof Error ? err.message : 'Queue close error' },
+        'Error closing BullMQ queue',
+      );
       exitCode = 1;
     }
   }
@@ -252,7 +258,10 @@ export async function shutdownWorkerResources(
       try {
         await closeRedisClient(client);
       } catch (err) {
-        input.logger?.error({ err }, 'Error closing Redis client');
+        input.logger?.error(
+          { errorMessage: err instanceof Error ? err.message : 'Redis close error' },
+          'Error closing Redis client',
+        );
         exitCode = 1;
       }
     }
@@ -263,10 +272,107 @@ export async function shutdownWorkerResources(
     try {
       await input.closeDb();
     } catch (err) {
-      input.logger?.error({ err }, 'Error closing PostgreSQL pool');
+      input.logger?.error(
+        { errorMessage: err instanceof Error ? err.message : 'PostgreSQL close error' },
+        'Error closing PostgreSQL pool',
+      );
       exitCode = 1;
     }
   }
 
-  return { exitCode };
+  return exitCode;
+}
+
+export interface ShutdownWorkerResourcesResult {
+  readonly exitCode: 0 | 1;
+  /** True only when worker closure was confirmed before downstream disposal. */
+  readonly ownershipConfirmed: boolean;
+  /** True only when Queue/Redis/PostgreSQL disposal completed without errors. */
+  readonly downstreamClosed: boolean;
+  /** Backwards-compatible alias for `ownershipConfirmed && downstreamClosed`. */
+  readonly confirmed: boolean;
+  readonly timedOut: boolean;
+  /** Present when worker closure exceeded the observation window; resolves after deferred cleanup. */
+  readonly pendingCleanup?: Promise<{
+    readonly exitCode: 0 | 1;
+    readonly ownershipConfirmed: boolean;
+    readonly downstreamClosed: boolean;
+  }>;
+}
+
+/**
+ * Fail-closed ordered graceful shutdown for worker resources:
+ * 1. Observe single graceful `worker.close()`.
+ * 2. Only when worker closure is confirmed, close Queue -> Redis -> PostgreSQL (last).
+ * 3. If worker closure times out or rejects, do NOT close Queue/Redis/PostgreSQL underneath
+ *    potentially active work; retain `pendingCleanup` when a close promise is still pending.
+ */
+export async function shutdownWorkerResources(
+  input: ShutdownWorkerResourcesInput,
+): Promise<ShutdownWorkerResourcesResult> {
+  if (input.worker !== undefined) {
+    input.logger?.info('Shutdown step 1/4: closing BullMQ worker');
+    const observation = await closeWorkerWithTimeout(
+      input.worker,
+      input.workerCloseTimeoutMs ?? DEFAULT_WORKER_CLOSE_TIMEOUT_MS,
+    );
+
+    if (!observation.closed) {
+      if (observation.timedOut) {
+        input.logger?.warn(
+          'BullMQ worker close did not complete within observation window; keeping queue/Redis/PostgreSQL open pending confirmed closure',
+        );
+        const pendingCleanup = observation.pendingClose.then(
+          async () => {
+            const downstreamExit = await closeDownstreamResources(input);
+            return {
+              exitCode: 1 as const,
+              ownershipConfirmed: true,
+              downstreamClosed: downstreamExit === 0,
+            };
+          },
+          () => ({
+            exitCode: 1 as const,
+            ownershipConfirmed: false,
+            downstreamClosed: false,
+          }),
+        );
+        return {
+          exitCode: 1,
+          ownershipConfirmed: false,
+          downstreamClosed: false,
+          confirmed: false,
+          timedOut: true,
+          pendingCleanup,
+        };
+      }
+
+      input.logger?.error(
+        {
+          errorMessage:
+            observation.error instanceof Error
+              ? observation.error.message
+              : 'BullMQ worker close rejected',
+        },
+        'BullMQ worker close rejected; refusing to close queue/Redis/PostgreSQL without confirmed worker closure',
+      );
+      return {
+        exitCode: 1,
+        ownershipConfirmed: false,
+        downstreamClosed: false,
+        confirmed: false,
+        timedOut: false,
+      };
+    }
+  }
+
+  const exitCode = await closeDownstreamResources(input);
+  const downstreamClosed = exitCode === 0;
+  return {
+    exitCode,
+    ownershipConfirmed: true,
+    downstreamClosed,
+    confirmed: downstreamClosed,
+    timedOut: false,
+  };
 }

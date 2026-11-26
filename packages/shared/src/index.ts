@@ -33,3 +33,6 @@ export {
 } from './logger.js';
 
 export { isRepoConfigPath, isSupportedSourcePath, normalizePosixPath } from './repo-filter.js';
+
+export * from './analysis-contracts.js';
+export * from './parser-ipc.js';

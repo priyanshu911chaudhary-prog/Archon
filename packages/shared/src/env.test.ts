@@ -180,6 +180,50 @@ describe('parseEnv', () => {
     expect(caught.message).toContain('WEB_ORIGIN');
     expect(caught.message).toContain('TRUST_PROXY_HOPS');
   });
+  it('enforces parser-IPC-compatible defaults and accepts lower valid limits', () => {
+    const defaults = parseEnv(BASE_VALID_ENV);
+
+    expect(defaults.MAX_SUPPORTED_FILES).toBe(500);
+    expect(defaults.MAX_REPO_SIZE_MB).toBe(50);
+
+    const lower = parseEnv({
+      ...BASE_VALID_ENV,
+      MAX_SUPPORTED_FILES: '25',
+      MAX_REPO_SIZE_MB: '10',
+    });
+
+    expect(lower.MAX_SUPPORTED_FILES).toBe(25);
+    expect(lower.MAX_REPO_SIZE_MB).toBe(10);
+
+    const minimum = parseEnv({
+      ...BASE_VALID_ENV,
+      MAX_SUPPORTED_FILES: '1',
+      MAX_REPO_SIZE_MB: '1',
+    });
+
+    expect(minimum.MAX_SUPPORTED_FILES).toBe(1);
+    expect(minimum.MAX_REPO_SIZE_MB).toBe(1);
+  });
+
+  it('rejects incompatible parser limits without silent clamping', () => {
+    for (const value of ['501', '0', '-5', '12.5']) {
+      expect(() =>
+        parseEnv({
+          ...BASE_VALID_ENV,
+          MAX_SUPPORTED_FILES: value,
+        }),
+      ).toThrow(/MAX_SUPPORTED_FILES/);
+    }
+
+    for (const value of ['51', '0', '-1', '10.5']) {
+      expect(() =>
+        parseEnv({
+          ...BASE_VALID_ENV,
+          MAX_REPO_SIZE_MB: value,
+        }),
+      ).toThrow(/MAX_REPO_SIZE_MB/);
+    }
+  });
 });
 
 describe('findRepoRoot and loadEnv', () => {

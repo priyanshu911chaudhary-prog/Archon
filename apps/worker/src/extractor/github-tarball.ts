@@ -28,6 +28,9 @@ const DEFAULT_MAX_META_ENTRY_SIZE = 64 * 1024; // 64 KiB
 const DEFAULT_MAX_DECOMPRESSION_RATIO = 1000;
 const MAX_DECOMPRESSED_CAP_MB = 200;
 
+export const SAFE_TARBALL_CANCELLED_MESSAGE =
+  'Tarball extraction cancelled during worker shutdown.';
+
 const ALLOWED_TARBALL_CONTENT_TYPES = new Set([
   'application/x-gzip',
   'application/gzip',
@@ -100,6 +103,48 @@ interface ResolvedCaps {
   readonly maxFileBytes: number;
   readonly maxConfigFiles: number;
   readonly timeoutMs: number;
+}
+
+interface ExtractionAbortTracker {
+  firstError: TarballExtractionError | null;
+}
+
+function isSignalAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
+function createTarballCancelledError(): TarballExtractionError {
+  return new TarballExtractionError({
+    code: 'TARBALL_CANCELLED',
+    message: SAFE_TARBALL_CANCELLED_MESSAGE,
+    retryable: true,
+  });
+}
+
+function createTarballTimeoutError(message: string, cause?: unknown): TarballExtractionError {
+  return new TarballExtractionError({
+    code: 'TARBALL_TIMEOUT',
+    message,
+    retryable: true,
+    ...(cause !== undefined ? { cause } : {}),
+  });
+}
+
+function resolveAbortFailure(
+  signal: AbortSignal,
+  tracker: ExtractionAbortTracker,
+  fallbackTimeoutMessage: string,
+  cause?: unknown,
+): TarballExtractionError {
+  if (tracker.firstError !== null) {
+    return tracker.firstError;
+  }
+  const reason: unknown = signal.reason;
+  if (reason instanceof TarballExtractionError) {
+    tracker.firstError = reason;
+    return reason;
+  }
+  return createTarballTimeoutError(fallbackTimeoutMessage, cause);
 }
 
 function resolveCaps(options: ExtractGitHubTarballOptions): ResolvedCaps {
@@ -222,7 +267,16 @@ function isAbortLikeError(err: unknown): boolean {
 async function fetchTarballStream(
   options: ExtractGitHubTarballOptions,
   signal: AbortSignal,
+  abortTracker: ExtractionAbortTracker,
 ): Promise<NodeWebReadableStream<Uint8Array>> {
+  if (isSignalAborted(signal)) {
+    throw resolveAbortFailure(
+      signal,
+      abortTracker,
+      'Timed out requesting tarball redirect from GitHub API.',
+    );
+  }
+
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const apiUrl = `${GITHUB_API_BASE}/repos/${encodeURIComponent(options.owner)}/${encodeURIComponent(options.name)}/tarball/${encodeURIComponent(options.commitSha)}`;
 
@@ -244,12 +298,13 @@ async function fetchTarballStream(
       signal,
     });
   } catch (err) {
-    if (isAbortLikeError(err) || signal.aborted) {
-      throw new TarballExtractionError({
-        code: 'TARBALL_TIMEOUT',
-        message: 'Timed out requesting tarball redirect from GitHub API.',
-        cause: err,
-      });
+    if (isAbortLikeError(err) || isSignalAborted(signal)) {
+      throw resolveAbortFailure(
+        signal,
+        abortTracker,
+        'Timed out requesting tarball redirect from GitHub API.',
+        err,
+      );
     }
     throw new TarballExtractionError({
       code: 'TARBALL_UPSTREAM_ERROR',
@@ -279,6 +334,10 @@ async function fetchTarballStream(
 
   const codeloadUrl = validateCodeloadRedirectUrl(redirectResponse.headers.get('location'));
 
+  if (isSignalAborted(signal)) {
+    throw resolveAbortFailure(signal, abortTracker, 'Timed out downloading repository tarball.');
+  }
+
   // Second request: codeload.github.com ONLY, strictly NO Authorization header, no further redirects
   let archiveResponse: Response;
   try {
@@ -292,12 +351,13 @@ async function fetchTarballStream(
       signal,
     });
   } catch (err) {
-    if (isAbortLikeError(err) || signal.aborted) {
-      throw new TarballExtractionError({
-        code: 'TARBALL_TIMEOUT',
-        message: 'Timed out downloading repository tarball.',
-        cause: err,
-      });
+    if (isAbortLikeError(err) || isSignalAborted(signal)) {
+      throw resolveAbortFailure(
+        signal,
+        abortTracker,
+        'Timed out downloading repository tarball.',
+        err,
+      );
     }
     throw new TarballExtractionError({
       code: 'TARBALL_UPSTREAM_ERROR',
@@ -329,6 +389,11 @@ async function fetchTarballStream(
     });
   }
 
+  if (isSignalAborted(signal)) {
+    await archiveResponse.body.cancel().catch(() => undefined);
+    throw resolveAbortFailure(signal, abortTracker, 'Timed out downloading repository tarball.');
+  }
+
   return archiveResponse.body;
 }
 
@@ -337,28 +402,106 @@ async function writeEntryToDisk(
   destinationPath: string,
   remainingFileBytes: number,
   remainingTotalBytes: number,
+  signal: AbortSignal,
+  abortTracker: ExtractionAbortTracker,
 ): Promise<number> {
+  const absorbEntryError = (): void => {
+    // Prevent unhandled 'error' events when parser.abort() tears down a read entry
+  };
+  const drainEntry = (): void => {
+    entry.on('error', absorbEntryError);
+    entry.resume();
+  };
+
+  if (isSignalAborted(signal)) {
+    drainEntry();
+    throw resolveAbortFailure(signal, abortTracker, 'Tarball extraction aborted or timed out.');
+  }
+
+  // Keep entry error absorbed while awaiting mkdir so parser.abort() during mkdir never crashes
+  entry.on('error', absorbEntryError);
   await mkdir(path.dirname(destinationPath), { recursive: true });
 
-  return new Promise<number>((resolve, reject) => {
-    const out = createWriteStream(destinationPath, { flags: 'wx' });
+  if (isSignalAborted(signal)) {
+    drainEntry();
+    throw resolveAbortFailure(signal, abortTracker, 'Tarball extraction aborted or timed out.');
+  }
+
+  return await new Promise<number>((resolve, reject) => {
+    const out = createWriteStream(destinationPath, { flags: 'wx', autoClose: true });
     let bytesForThisFile = 0;
     let settled = false;
+    let outcome:
+      | { readonly ok: true; readonly bytes: number }
+      | { readonly ok: false; readonly err: Error }
+      | null = null;
 
-    const fail = (err: Error): void => {
+    const cleanupListeners = (): void => {
+      signal.removeEventListener('abort', onAbort);
+      entry.removeListener('data', onEntryData);
+      entry.removeListener('end', onEntryEnd);
+      entry.removeListener('error', onEntryError);
+      out.removeListener('drain', onOutDrain);
+      out.removeListener('finish', onOutFinish);
+      out.removeListener('error', onOutError);
+      out.removeListener('close', onOutClose);
+    };
+
+    const settleAfterClose = (): void => {
       if (settled) {
         return;
       }
       settled = true;
-      entry.removeAllListeners('data');
-      entry.removeAllListeners('end');
-      entry.removeAllListeners('error');
-      out.destroy();
-      reject(err);
+      cleanupListeners();
+      entry.on('error', absorbEntryError);
+      if (outcome === null) {
+        reject(
+          new TarballExtractionError({
+            code: 'TARBALL_PARSE_ERROR',
+            retryable: true,
+            message: `Write stream closed unexpectedly for ${path.basename(destinationPath)}.`,
+          }),
+        );
+        return;
+      }
+      if (outcome.ok) {
+        resolve(outcome.bytes);
+      } else {
+        reject(outcome.err);
+      }
     };
 
-    out.on('error', (err) => {
-      fail(
+    const failAndClose = (err: Error): void => {
+      outcome ??= { ok: false, err };
+      entry.removeListener('data', onEntryData);
+      entry.removeListener('end', onEntryEnd);
+      entry.removeListener('error', onEntryError);
+      entry.on('error', absorbEntryError);
+      out.removeListener('drain', onOutDrain);
+      // Resume entry if paused for backpressure so parser teardown never hangs
+      entry.resume();
+      if (!out.destroyed) {
+        out.destroy();
+      }
+      if (out.closed) {
+        settleAfterClose();
+      }
+    };
+
+    const onAbort = (): void => {
+      failAndClose(
+        resolveAbortFailure(signal, abortTracker, 'Tarball extraction aborted or timed out.'),
+      );
+    };
+
+    const onOutDrain = (): void => {
+      if (outcome === null) {
+        entry.resume();
+      }
+    };
+
+    const onOutError = (err: Error): void => {
+      failAndClose(
         new TarballExtractionError({
           code: 'TARBALL_PARSE_ERROR',
           retryable: true,
@@ -366,17 +509,21 @@ async function writeEntryToDisk(
           cause: err,
         }),
       );
-    });
+    };
 
-    out.on('finish', () => {
-      if (!settled) {
-        settled = true;
-        resolve(bytesForThisFile);
+    const onOutFinish = (): void => {
+      outcome ??= { ok: true, bytes: bytesForThisFile };
+      if (out.closed) {
+        settleAfterClose();
       }
-    });
+    };
 
-    entry.on('error', (err) => {
-      fail(
+    const onOutClose = (): void => {
+      settleAfterClose();
+    };
+
+    const onEntryError = (err: unknown): void => {
+      failAndClose(
         err instanceof TarballExtractionError
           ? err
           : new TarballExtractionError({
@@ -386,16 +533,16 @@ async function writeEntryToDisk(
               cause: err,
             }),
       );
-    });
+    };
 
-    entry.on('data', (chunk: Buffer) => {
-      if (settled) {
+    const onEntryData = (chunk: Buffer): void => {
+      if (outcome !== null) {
         return;
       }
       bytesForThisFile += chunk.length;
 
       if (bytesForThisFile > remainingFileBytes) {
-        fail(
+        failAndClose(
           new TarballExtractionError({
             code: 'TARBALL_SIZE_LIMIT_EXCEEDED',
             message: `Tar entry exceeded declared size / per-file cap (${remainingFileBytes} bytes).`,
@@ -404,7 +551,7 @@ async function writeEntryToDisk(
         return;
       }
       if (bytesForThisFile > remainingTotalBytes) {
-        fail(
+        failAndClose(
           new TarballExtractionError({
             code: 'TARBALL_SIZE_LIMIT_EXCEEDED',
             message: 'Total extracted file size exceeded maximum written bytes cap.',
@@ -415,19 +562,29 @@ async function writeEntryToDisk(
 
       if (!out.write(chunk)) {
         entry.pause();
-        out.once('drain', () => {
-          if (!settled) {
-            entry.resume();
-          }
-        });
+        out.once('drain', onOutDrain);
       }
-    });
+    };
 
-    entry.on('end', () => {
-      if (!settled) {
+    const onEntryEnd = (): void => {
+      if (outcome === null) {
         out.end();
       }
-    });
+    };
+
+    out.on('error', onOutError);
+    out.on('finish', onOutFinish);
+    out.on('close', onOutClose);
+    entry.removeListener('error', absorbEntryError);
+    entry.on('error', onEntryError);
+    entry.on('data', onEntryData);
+    entry.on('end', onEntryEnd);
+    signal.addEventListener('abort', onAbort, { once: true });
+
+    if (isSignalAborted(signal)) {
+      onAbort();
+      return;
+    }
 
     entry.resume();
   });
@@ -438,6 +595,7 @@ async function extractTarballStreamIntoDir(
   canonicalRootDir: string,
   caps: ResolvedCaps,
   abortController: AbortController,
+  abortTracker: ExtractionAbortTracker,
 ): Promise<ExtractedRepoWorkspace> {
   const supportedFiles: string[] = [];
   const configFiles: string[] = [];
@@ -453,13 +611,24 @@ async function extractTarballStreamIntoDir(
     topLevelPrefix: null,
   };
 
+  // Guard against cancellation/timeout arriving between fetch completion and stream setup
+  if (isSignalAborted(abortController.signal)) {
+    await bodyStream.cancel().catch(() => undefined);
+    throw resolveAbortFailure(
+      abortController.signal,
+      abortTracker,
+      'Tarball extraction timed out.',
+    );
+  }
+
   const triggerFatal = (err: TarballExtractionError, parser?: Parser): void => {
-    state.fatal ??= err;
+    abortTracker.firstError ??= err;
+    state.fatal ??= abortTracker.firstError;
     if (!abortController.signal.aborted) {
-      abortController.abort(err);
+      abortController.abort(abortTracker.firstError);
     }
     if (parser) {
-      parser.abort(err);
+      parser.abort(abortTracker.firstError);
     }
   };
 
@@ -497,7 +666,7 @@ async function extractTarballStreamIntoDir(
       );
     },
     onReadEntry: (entry: ReadEntry) => {
-      if (state.fatal !== null) {
+      if (state.fatal !== null || abortTracker.firstError !== null) {
         entry.resume();
         return;
       }
@@ -681,6 +850,8 @@ async function extractTarballStreamIntoDir(
         destinationPath,
         caps.maxFileBytes,
         remainingTotal,
+        abortController.signal,
+        abortTracker,
       )
         .then((actualBytes) => {
           // Adjust if actual bytes differed slightly from declaredSize
@@ -718,6 +889,7 @@ async function extractTarballStreamIntoDir(
               cause: err,
             });
       state.fatal ??= typedErr;
+      abortTracker.firstError ??= typedErr;
       reject(typedErr);
     });
   });
@@ -728,20 +900,22 @@ async function extractTarballStreamIntoDir(
   const gunzip = createGunzip();
 
   const onAbort = (): void => {
-    const reason: unknown = abortController.signal.reason;
     const err =
-      reason instanceof TarballExtractionError
-        ? reason
-        : new TarballExtractionError({
-            code: 'TARBALL_TIMEOUT',
-            message: 'Tarball extraction aborted or timed out.',
-            cause: reason,
-          });
+      state.fatal ??
+      resolveAbortFailure(
+        abortController.signal,
+        abortTracker,
+        'Tarball extraction aborted or timed out.',
+      );
     nodeReadable.destroy(err);
     gunzip.destroy(err);
     parser.abort(err);
   };
   abortController.signal.addEventListener('abort', onAbort, { once: true });
+  // Handle the case where abortController was already aborted before listener registration
+  if (isSignalAborted(abortController.signal)) {
+    onAbort();
+  }
 
   const parserSink = new Transform({
     transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback) {
@@ -773,18 +947,22 @@ async function extractTarballStreamIntoDir(
     await Promise.all(pendingWrites);
   } catch (err) {
     await Promise.allSettled(pendingWrites);
+    if (abortTracker.firstError !== null) {
+      throw abortTracker.firstError;
+    }
     if (state.fatal !== null) {
       throw state.fatal;
     }
     if (err instanceof TarballExtractionError) {
       throw err;
     }
-    if (isAbortLikeError(err) || abortController.signal.aborted) {
-      throw new TarballExtractionError({
-        code: 'TARBALL_TIMEOUT',
-        message: 'Tarball extraction timed out.',
-        cause: err,
-      });
+    if (isAbortLikeError(err) || isSignalAborted(abortController.signal)) {
+      throw resolveAbortFailure(
+        abortController.signal,
+        abortTracker,
+        'Tarball extraction timed out.',
+        err,
+      );
     }
     throw new TarballExtractionError({
       code: 'TARBALL_PARSE_ERROR',
@@ -831,51 +1009,91 @@ async function extractTarballStreamIntoDir(
 
 /**
  * Downloads and extracts a GitHub repository commit tarball into a fresh isolated temp directory,
- * executes `callback`, and unconditionally purges the temp directory in `finally` (even on error).
+ * executes `callback`, and purges the temp directory in `finally` ONLY AFTER `callback` settles.
+ * External cancellation is distinguished from internal extraction timeout via `TARBALL_CANCELLED`
+ * using a fixed safe message and first-abort precedence.
  */
 export async function withExtractedRepo<T>(
   options: ExtractGitHubTarballOptions,
   callback: (workspace: ExtractedRepoWorkspace) => Promise<T>,
 ): Promise<T> {
+  if (isSignalAborted(options.signal)) {
+    throw createTarballCancelledError();
+  }
+
   const caps = resolveCaps(options);
   const tempBaseDir = options.tempBaseDir ?? os.tmpdir();
   await mkdir(tempBaseDir, { recursive: true });
-  const tempDir = await mkdtemp(path.join(tempBaseDir, 'archon-extract-'));
-  const canonicalRootDir = await realpath(tempDir);
 
-  const abortController = new AbortController();
-  const timeoutHandle = setTimeout(() => {
-    abortController.abort(
-      new TarballExtractionError({
-        code: 'TARBALL_TIMEOUT',
-        message: `Tarball extraction timed out after ${caps.timeoutMs} ms.`,
-      }),
-    );
-  }, caps.timeoutMs);
-
-  const onExternalAbort = (): void => {
-    abortController.abort(options.signal?.reason);
-  };
-  if (options.signal) {
-    if (options.signal.aborted) {
-      abortController.abort(options.signal.reason);
-    } else {
-      options.signal.addEventListener('abort', onExternalAbort, { once: true });
-    }
+  if (isSignalAborted(options.signal)) {
+    throw createTarballCancelledError();
   }
 
+  const tempDir = await mkdtemp(path.join(tempBaseDir, 'archon-extract-'));
+
+  const abortController = new AbortController();
+  const abortTracker: ExtractionAbortTracker = { firstError: null };
+
+  const abortWithFirst = (err: TarballExtractionError): void => {
+    abortTracker.firstError ??= err;
+    if (!abortController.signal.aborted) {
+      abortController.abort(abortTracker.firstError);
+    }
+  };
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const onExternalAbort = (): void => {
+    abortWithFirst(createTarballCancelledError());
+  };
+
   try {
-    const bodyStream = await fetchTarballStream(options, abortController.signal);
+    const canonicalRootDir = await realpath(tempDir);
+
+    timeoutHandle = setTimeout(() => {
+      abortWithFirst(
+        createTarballTimeoutError(`Tarball extraction timed out after ${caps.timeoutMs} ms.`),
+      );
+    }, caps.timeoutMs);
+
+    if (options.signal !== undefined) {
+      options.signal.addEventListener('abort', onExternalAbort, { once: true });
+      if (isSignalAborted(options.signal)) {
+        onExternalAbort();
+      }
+    }
+
+    const bodyStream = await fetchTarballStream(options, abortController.signal, abortTracker);
     const workspace = await extractTarballStreamIntoDir(
       bodyStream,
       canonicalRootDir,
       caps,
       abortController,
+      abortTracker,
     );
     clearTimeout(timeoutHandle);
+    timeoutHandle = undefined;
+    options.signal?.removeEventListener('abort', onExternalAbort);
+
+    // Check internal deadline AND external cancellation before invoking callback
+    if (abortTracker.firstError !== null) {
+      throw abortTracker.firstError;
+    }
+    if (isSignalAborted(abortController.signal)) {
+      throw resolveAbortFailure(
+        abortController.signal,
+        abortTracker,
+        `Tarball extraction timed out after ${caps.timeoutMs} ms.`,
+      );
+    }
+    if (isSignalAborted(options.signal)) {
+      throw createTarballCancelledError();
+    }
+
     return await callback(workspace);
   } finally {
-    clearTimeout(timeoutHandle);
+    if (timeoutHandle !== undefined) {
+      clearTimeout(timeoutHandle);
+    }
     options.signal?.removeEventListener('abort', onExternalAbort);
     await rm(tempDir, { recursive: true, force: true });
   }

@@ -14,31 +14,34 @@ Archon is built incrementally. The following sections distinguish implemented ca
 - **Deterministic static analysis engine (`packages/core`):** In-memory `ts-morph` (`28.0.0`, bundled TypeScript `6.0.2`) extraction of folder, file, function, class and symbol nodes; `IMPORTS` edges with direct barrel hops and local `tsconfig` aliases; and `CALLS` edges for supported functions, methods, constructors, `super()`, static CommonJS patterns and unambiguous internal JSX components, including recognized React `memo`/`forwardRef` wrappers and supported function-object augmentations. Supports strict BOM-aware UTF-8/UTF-16 source decoding without installing target dependencies or executing target source code.
 - **Reproducible sampled-file evaluation (`scripts/`):** Local-directory precision, recall and F1 evaluation against SHA-256-frozen, AI-assisted reference manifests for three pinned open-source repositories.
 
+- **Parser subprocess isolation and production worker integration:** A dedicated compiled Node.js parser child with versioned IPC, strict graph validation, bounded response size, memory and timeout controls, cancellation and fatal-state supervision, and a minimal child environment. Standalone and embedded worker modes use a shared resource-ownership lifecycle. Validated analysis results reach an explicit no-op handoff boundary before graph persistence.
+
 ### Planned / Not Yet Integrated
 
-- **Parser subprocess isolation and worker wiring (Step 4.3):** Forked parser execution, timeout and memory controls, and integration of `packages/core` into the ingestion worker. The current ingestion parsing hook is not yet connected to the static analysis engine.
 - **Persistent dependency graphs (Phase 5):** Store extracted nodes and edges in PostgreSQL.
 - **Blast-radius query API:** Transitive impact traversal and dependency queries.
 - **Interactive architecture visualization:** Next.js dependency graph inspector.
 - **Semantic search and AI risk reports:** Vector embeddings and citation-grounded Gemini analysis.
+- **Cloud deployment:** Hosted production deployment and verification remain planned.
 
 ## Workspace Structure
 
 ```text
 archon/
-├── apps/
-│   ├── api/          # Fastify REST API and ingestion job endpoints
-│   └── worker/       # BullMQ background ingestion worker
-├── packages/
-│   ├── core/         # Deterministic static analysis (nodes, IMPORTS, CALLS)
-│   ├── db/           # Drizzle schema, migrations and PostgreSQL repositories
-│   └── shared/       # Shared schemas, path filters, env validation and logging
-└── scripts/          # Local evaluator and frozen reference manifests
+|-- apps/
+|   |-- api/          # Fastify API and embedded worker integration
+|   `-- worker/       # Ingestion, parser child, runner and lifecycle
+|-- packages/
+|   |-- core/         # Deterministic static analysis
+|   |-- db/           # PostgreSQL schema and repositories
+|   `-- shared/       # Environment, graph and IPC contracts
+|-- docs/             # Architecture and validation documentation
+`-- scripts/          # Evaluator, frozen manifests and benchmarks
 ```
 
 ## Static Analysis & Sampled Evaluation
 
-The Archon workspace passes **175 unit tests** across 25 suites, including 63 core analysis tests and 19 evaluator tests, plus **6 Docker-backed integration tests** covering existing PostgreSQL repository and BullMQ worker infrastructure.
+The Phase 4 local verification baseline records **283 unit tests across 33 suites** and **10 Docker-backed integration tests across 2 suites**, for **293 passing tests across 35 suites**. Integration coverage includes the real isolated parser child, PostgreSQL repository state, BullMQ job execution and lifecycle coordination.
 
 The post-correction regression evaluation scored a purposive sample of 30 of 234 supported source files (approximately 12.8%) across `pmndrs/zustand`, `vercel/nextjs-subscription-payments` and `shadcn-ui/taxonomy`, all pinned to specific commits.
 
@@ -53,6 +56,28 @@ All 237 primary reference relationships were recovered with zero sampled false p
 All three corrected graphs were deterministic across three fresh-process runs per repository. Full-repository extraction produced 857 nodes and 1,606 edges across 234 parsed source files with zero analysis warnings. Only the annotated source-file scope was scored for accuracy.
 
 These are regression results on frozen, AI-assisted, pre-prediction-reviewed reference manifests, not universal accuracy claims or a held-out generalization benchmark. See [the evaluation documentation](./scripts/README.md) for the methodology, original baseline, measured results, limitations and reproduction commands.
+
+## Parser Isolation and Production Memory Validation
+
+The production worker uses an isolated parser child with a 256 MiB V8 old-space limit, a 60-second parser timeout, a 32 MiB IPC response budget, and worker concurrency of one. Production explicitly disables standard library loading, based on the measured frozen-repository benchmark results.
+
+The integrated Linux service memory gate exercised the actual compiled Fastify API, embedded BullMQ worker and isolated parser child under a 512 MiB cgroup memory limit with swap disabled. PostgreSQL and Redis servers remained external to the measured container.
+
+| Measurement                             | Observed result |
+| --------------------------------------- | --------------: |
+| Maximum observed cumulative cgroup peak |      194.95 MiB |
+| Percentage of 512 MiB limit             |          38.08% |
+| Sequential live ingestions completed    |           3 / 3 |
+| Source files parsed                     |             234 |
+| Extracted graph nodes                   |             857 |
+| Extracted IMPORTS and CALLS edges       |           1,606 |
+| Analysis warnings                       |               0 |
+| Observed swap, OOM events and restarts  |               0 |
+| Natural container exit code             |               0 |
+
+These are three sequential local Linux smoke observations, not a p95 benchmark, proof of arbitrary 500-file support, or a memory guarantee for future graph persistence.
+
+See the [Phase 4 parser isolation and validation report](./docs/phase-4-parser-isolation.md) for detailed measurements, architecture, evidence references and limitations.
 
 ## Prerequisites
 
@@ -88,6 +113,6 @@ npm run test:integration
 
 Local Docker endpoints use PostgreSQL at `127.0.0.1:5432` and Redis at `127.0.0.1:6380`. The integration tests use the configured local environment rather than a production database.
 
-For standalone static analysis evaluation, follow [scripts/README.md](./scripts/README.md). Production parser integration and graph persistence are upcoming steps.
+For standalone static analysis evaluation, follow [scripts/README.md](./scripts/README.md). Production parser integration is complete. Persistent graph storage is the next implementation phase.
 
 <!-- CI bootstrap verified -->

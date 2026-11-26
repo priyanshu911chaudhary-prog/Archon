@@ -1,12 +1,22 @@
-import { existsSync } from 'node:fs';
+import { createWriteStream, existsSync } from 'node:fs';
+import type * as NodeFs from 'node:fs';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TarballExtractionError } from './errors.js';
 import { withExtractedRepo, type ExtractGitHubTarballOptions } from './github-tarball.js';
 import { buildGzippedUstar, type UstarFixtureEntry } from './tar-test-utils.js';
 import { gzipSync } from 'node:zlib';
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeFs>();
+
+  return {
+    ...actual,
+    createWriteStream: vi.fn(actual.createWriteStream),
+  };
+});
 
 type FetchInput = Parameters<typeof globalThis.fetch>[0];
 
@@ -486,6 +496,293 @@ describe('withExtractedRepo (safe GitHub tarball extractor)', () => {
     ).rejects.toThrow('Simulated parser failure');
 
     expect(existsSync(capturedDir)).toBe(false);
+    expect(await readdir(tempBaseDir)).toEqual([]);
+  });
+  it('classifies external AbortSignal cancellation as TARBALL_CANCELLED with fixed safe message before fetch, during fetch, between fetches, and before callback', async () => {
+    const rawSecretReason = 'RAW_EXTERNAL_ABORT_REASON_SECRET_123';
+
+    // 1. Already aborted before extraction starts -> zero fetch calls, zero temp dirs left
+    let fetchCalls = 0;
+    const countingFetch: typeof globalThis.fetch = () => {
+      fetchCalls += 1;
+      return Promise.resolve(new Response(null, { status: 404 }));
+    };
+    const preAborted = new AbortController();
+    preAborted.abort(new Error(rawSecretReason));
+
+    const preErr = await expectTarballError(
+      withExtractedRepo(baseOptions(countingFetch, { signal: preAborted.signal }), () =>
+        Promise.resolve(),
+      ),
+      'TARBALL_CANCELLED',
+    );
+    expect(preErr.retryable).toBe(true);
+    expect(preErr.message).not.toContain(rawSecretReason);
+    expect(fetchCalls).toBe(0);
+    expect(await readdir(tempBaseDir)).toEqual([]);
+
+    // 2. External abort fires during hanging fetch -> TARBALL_CANCELLED (not TARBALL_TIMEOUT)
+    const duringFetchAbort = new AbortController();
+    const slowFetch: typeof globalThis.fetch = (_input, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('Aborted', 'AbortError'));
+        });
+        setTimeout(() => {
+          duringFetchAbort.abort(new Error(rawSecretReason));
+        }, 15);
+      });
+
+    const fetchErr = await expectTarballError(
+      withExtractedRepo(
+        baseOptions(slowFetch, { timeoutMs: 5_000, signal: duringFetchAbort.signal }),
+        () => Promise.resolve(),
+      ),
+      'TARBALL_CANCELLED',
+    );
+    expect(fetchErr.retryable).toBe(true);
+    expect(fetchErr.message).not.toContain(rawSecretReason);
+    expect(await readdir(tempBaseDir)).toEqual([]);
+
+    // 3. External abort fires between redirect response and codeload fetch
+    const betweenFetchAbort = new AbortController();
+    const archive = buildGzippedUstar([{ path: `${PREFIX}/src/a.ts`, content: 'export {};\n' }]);
+    const betweenFetch: typeof globalThis.fetch = (input) => {
+      const url = extractUrl(input);
+      if (url === API_URL) {
+        betweenFetchAbort.abort(new Error(rawSecretReason));
+        return Promise.resolve(
+          new Response(null, { status: 302, headers: { location: CODELOAD_URL } }),
+        );
+      }
+      return Promise.resolve(
+        new Response(new Uint8Array(archive), {
+          status: 200,
+          headers: { 'content-type': 'application/x-gzip' },
+        }),
+      );
+    };
+
+    const betweenErr = await expectTarballError(
+      withExtractedRepo(
+        baseOptions(betweenFetch, { timeoutMs: 5_000, signal: betweenFetchAbort.signal }),
+        () => Promise.resolve(),
+      ),
+      'TARBALL_CANCELLED',
+    );
+    expect(betweenErr.message).not.toContain(rawSecretReason);
+    expect(await readdir(tempBaseDir)).toEqual([]);
+  });
+
+  it('does not allow subsequent external cancellation to overwrite a prior deterministic TARBALL_SECURITY_VIOLATION', async () => {
+    const abortCtrl = new AbortController();
+
+    const maliciousArchive = buildGzippedUstar([
+      {
+        path: `${PREFIX}/src/evil.ts`,
+        typeFlag: '2',
+        linkName: '/etc/passwd',
+      },
+    ]);
+
+    let observedSecurityFailure = false;
+    let callbackInvoked = false;
+
+    const mockFetch: typeof globalThis.fetch = (input, init) => {
+      const url = extractUrl(input);
+
+      if (url === API_URL) {
+        return Promise.resolve(
+          new Response(null, {
+            status: 302,
+            headers: { location: CODELOAD_URL },
+          }),
+        );
+      }
+
+      const internalSignal = init?.signal;
+
+      if (!internalSignal) {
+        throw new Error('Expected internal extraction AbortSignal');
+      }
+
+      internalSignal.addEventListener(
+        'abort',
+        () => {
+          const reason: unknown = internalSignal.reason;
+
+          if (
+            reason instanceof TarballExtractionError &&
+            reason.code === 'TARBALL_SECURITY_VIOLATION'
+          ) {
+            observedSecurityFailure = true;
+
+            // Cancel externally only AFTER the extractor has
+            // established the deterministic security failure.
+            abortCtrl.abort(new Error('late shutdown'));
+          }
+        },
+        { once: true },
+      );
+
+      return Promise.resolve(
+        new Response(new Uint8Array(maliciousArchive), {
+          status: 200,
+          headers: {
+            'content-type': 'application/x-gzip',
+          },
+        }),
+      );
+    };
+
+    const err = await expectTarballError(
+      withExtractedRepo(
+        baseOptions(mockFetch, {
+          signal: abortCtrl.signal,
+        }),
+        () => {
+          callbackInvoked = true;
+          return Promise.resolve();
+        },
+      ),
+      'TARBALL_SECURITY_VIOLATION',
+    );
+
+    expect(observedSecurityFailure).toBe(true);
+    expect(abortCtrl.signal.aborted).toBe(true);
+    expect(callbackInvoked).toBe(false);
+    expect(err.retryable).toBe(false);
+    expect(await readdir(tempBaseDir)).toEqual([]);
+  });
+
+  it('keeps extracted workspace alive until callback settles even when external signal aborts during callback, then purges on settlement', async () => {
+    const abortCtrl = new AbortController();
+    const archive = buildGzippedUstar([
+      { path: `${PREFIX}/src/a.ts`, content: 'export const a = 1;\n' },
+    ]);
+    let releaseCallback: (() => void) | undefined;
+    let workspaceDir = '';
+
+    const extractPromise = withExtractedRepo(
+      baseOptions(createTarballMockFetch(archive), { signal: abortCtrl.signal }),
+      async (workspace) => {
+        workspaceDir = workspace.rootDir;
+        await new Promise<void>((resolve) => {
+          releaseCallback = resolve;
+        });
+        // Workspace MUST still exist right up until callback settles
+        expect(existsSync(workspaceDir)).toBe(true);
+        return 'settled';
+      },
+    );
+
+    // Wait until callback is active
+    while (releaseCallback === undefined) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    // External signal aborts while callback (e.g. parser child) is still active
+    abortCtrl.abort();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(existsSync(workspaceDir)).toBe(true);
+
+    // Release callback -> workspace is purged cleanly in finally
+    releaseCallback();
+    await expect(extractPromise).resolves.toBe('settled');
+    expect(existsSync(workspaceDir)).toBe(false);
+    expect(await readdir(tempBaseDir)).toEqual([]);
+  });
+  it('cancels with an open file write stream, awaits stream closure, and purges the temp directory without leaving locked files', async () => {
+    const abortCtrl = new AbortController();
+
+    const archive = buildGzippedUstar([
+      {
+        path: `${PREFIX}/src/large.ts`,
+        content: `export const s = "${'a'.repeat(128 * 1024)}";\n`,
+      },
+    ]);
+
+    const actualFs = await vi.importActual<typeof NodeFs>('node:fs');
+
+    const streamMock = vi.mocked(createWriteStream);
+
+    let openedBeforeFinish = false;
+    let streamClosed = false;
+    let fileExistedAtClose = false;
+    let callbackInvoked = false;
+
+    streamMock.mockImplementationOnce((filePath, options) => {
+      const out = actualFs.createWriteStream(filePath, options);
+
+      out.once('close', () => {
+        streamClosed = true;
+        fileExistedAtClose = existsSync(filePath);
+      });
+
+      out.once('open', () => {
+        openedBeforeFinish = !out.writableFinished && !out.destroyed;
+
+        // Cancel only after the actual file handle has opened.
+        abortCtrl.abort(new Error('shutdown during write'));
+      });
+
+      return out;
+    });
+
+    try {
+      const err = await expectTarballError(
+        withExtractedRepo(
+          baseOptions(createTarballMockFetch(archive), {
+            timeoutMs: 10_000,
+            signal: abortCtrl.signal,
+          }),
+          () => {
+            callbackInvoked = true;
+            return Promise.resolve();
+          },
+        ),
+        'TARBALL_CANCELLED',
+      );
+
+      expect(openedBeforeFinish).toBe(true);
+      expect(abortCtrl.signal.aborted).toBe(true);
+      expect(streamClosed).toBe(true);
+      expect(fileExistedAtClose).toBe(true);
+      expect(err.retryable).toBe(true);
+      expect(callbackInvoked).toBe(false);
+      expect(await readdir(tempBaseDir)).toEqual([]);
+    } finally {
+      streamMock.mockReset();
+      streamMock.mockImplementation(actualFs.createWriteStream);
+    }
+  });
+
+  it('preserves TARBALL_TIMEOUT precedence when external cancellation arrives after the internal extraction deadline', async () => {
+    const externalAbort = new AbortController();
+    let observedInternalTimeout = false;
+
+    const slowFetch: typeof globalThis.fetch = (_input, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          const reason: unknown = init.signal?.reason;
+          if (reason instanceof TarballExtractionError && reason.code === 'TARBALL_TIMEOUT') {
+            observedInternalTimeout = true;
+            // Fire external cancellation AFTER internal timeout has already latched
+            externalAbort.abort(new Error('late shutdown'));
+          }
+          reject(new DOMException('Aborted', 'AbortError'));
+        });
+      });
+
+    await expectTarballError(
+      withExtractedRepo(
+        baseOptions(slowFetch, { timeoutMs: 30, signal: externalAbort.signal }),
+        () => Promise.resolve(),
+      ),
+      'TARBALL_TIMEOUT',
+    );
+    expect(observedInternalTimeout).toBe(true);
+    expect(externalAbort.signal.aborted).toBe(true);
     expect(await readdir(tempBaseDir)).toEqual([]);
   });
 });
