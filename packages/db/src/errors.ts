@@ -24,6 +24,7 @@ const NODE_CONN_CODES = new Set([
 const PG_POOL_CLOSED_MSG_RE = /cannot use a pool after calling end/i;
 const PG_CONN_MSG_RE =
   /connection terminated|client has encountered a connection error|timeout exceeded when trying to connect/i;
+const PG_STATEMENT_TIMEOUT_MSG_RE = /canceling statement due to statement timeout/i;
 
 export interface PgErrorInfo {
   readonly code?: string;
@@ -207,6 +208,25 @@ export const isPgDeadlock = (err: unknown): boolean =>
   extractPgErrorInfo(err).code === PG_DEADLOCK_DETECTED_CODE;
 export const isPgQueryCanceled = (err: unknown): boolean =>
   extractPgErrorInfo(err).code === PG_QUERY_CANCELED_CODE;
+
+/**
+ * Distinguishes confirmed PostgreSQL `57014` statement timeouts from generic user/admin
+ * query cancellations (`canceling statement due to user request`).
+ */
+export function isPgStatementTimeout(err: unknown): boolean {
+  const chain = walkErrorChain(err);
+  if (extractPgErrorInfoFromChain(chain).code !== PG_QUERY_CANCELED_CODE) {
+    return false;
+  }
+  return chain.some(
+    (node) =>
+      isRecord(node) &&
+      !(node instanceof DbError) &&
+      node.code === PG_QUERY_CANCELED_CODE &&
+      typeof node.message === 'string' &&
+      PG_STATEMENT_TIMEOUT_MSG_RE.test(node.message),
+  );
+}
 export const isPgTransactionTimeout = (err: unknown): boolean =>
   extractPgErrorInfo(err).code === PG_TRANSACTION_TIMEOUT_CODE;
 export const isPgSerializationFailure = (err: unknown): boolean =>

@@ -82,7 +82,11 @@ export function registerErrorHandlers(app: FastifyInstance): void {
     }
 
     if (isResponseSerializationError(err)) {
-      request.log.error({ err }, 'Response serialization failed');
+      // Never log raw response payloads (which may contain source snippets or internal structures)
+      request.log.error(
+        { method: request.method, route: request.routeOptions.url },
+        'Response serialization failed',
+      );
       return reply
         .code(500)
         .send(buildErrorEnvelope('INTERNAL_ERROR', 'An unexpected internal error occurred.'));

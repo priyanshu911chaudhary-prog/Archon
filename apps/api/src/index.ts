@@ -52,3 +52,22 @@ export {
   type IngestionServiceDependencies,
   type JobStatusOutput,
 } from './services/ingestion-service.js';
+
+export {
+  DEFAULT_EMBEDDED_GRAPH_QUERY_CONCURRENCY,
+  DEFAULT_STANDALONE_GRAPH_QUERY_CONCURRENCY,
+  createGraphQueryAdmissionGate,
+  type GraphQueryAdmissionGate,
+} from './graph-admission.js';
+export {
+  DEFAULT_GRAPH_RATE_LIMIT_MAX,
+  DEFAULT_GRAPH_RATE_LIMIT_WINDOW_MS,
+  GRAPH_READ_ROUTE_PATHS,
+  isGraphReadRouteUrl,
+} from './rate-limit.js';
+export { DEFAULT_GRAPH_RATE_LIMIT_KEY_PREFIX } from './redis-rate-limit-store.js';
+export {
+  createGraphQueryService,
+  type GraphQueryService,
+  type GraphQueryServiceDependencies,
+} from './services/graph-query-service.js';

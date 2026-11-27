@@ -16,10 +16,10 @@ Archon is built incrementally. The following sections distinguish implemented ca
 
 - **Parser subprocess isolation (`apps/worker`):** A dedicated compiled Node.js parser child (`skipLoadingLibFiles: true`, 256 MiB V8 old-space, 60 s timeout, 32 MiB IPC budget, concurrency 1) with versioned IPC, strict graph validation, cancellation and fatal-state supervision, and a minimal child environment. Standalone and embedded worker modes share one resource-ownership lifecycle.
 - **Atomic PostgreSQL graph persistence and ownership fencing (`packages/db`, `apps/worker`, `apps/api`):** Persists extracted `nodes` and `edges` atomically in bounded PostgreSQL 17 transactions (`<= 200` nodes, `<= 500` edges, `<= 1 MiB` batch budget) together with `graph_persisted_at` and the `ready` transition (`progress_pct = 100`). Enforces BullMQ `attemptsStarted` delivery-generation fencing, five-outcome `NOWAIT` heartbeats, locked uncertain-`COMMIT` reconciliation, atomic legacy-ready recovery, verified-empty creation, terminal-only expiration deletion, and authoritative extraction/parser file-and-skip count accounting.
+- **Graph query APIs, deterministic blast radius and hub detection (`packages/shared`, `packages/db`, `apps/api`):** Read-only `REPEATABLE READ READ ONLY` HTTP endpoints for folder/file/function semantic zoom (`GET /api/v1/repos/:repoId/graph`), node detail and snippet retrieval (`GET /api/v1/repos/:repoId/nodes/:nodeId`), cursor-paginated edge evidence (`GET /api/v1/repos/:repoId/nodes/:nodeId/edges`), bounded 1–3 hop reverse-edge blast radius (`GET /api/v1/repos/:repoId/nodes/:nodeId/blast-radius`), and configurable hub detection (`GET /api/v1/repos/:repoId/hubs`, strict `inDegreeDistinct > HUB_THRESHOLD` default `30`), protected by shared graph-read Redis rate limiting and bounded concurrency admission (`2` embedded / `3` standalone).
 
 ### Planned / Not Yet Integrated
 
-- **Graph query APIs, blast radius and hub detection (Phase 6):** Read persisted graphs, direct/transitive impact traversal, and configurable hub detection.
 - **Interactive architecture visualization:** Next.js dependency graph inspector.
 - **Semantic search and AI risk reports:** Vector embeddings and citation-grounded Gemini analysis.
 - **Cloud deployment:** Hosted production deployment and verification remain planned.
@@ -41,7 +41,7 @@ archon/
 
 ## Static Analysis & Sampled Evaluation
 
-The Phase 5 local verification baseline (`f47877d`) records **319 unit tests across 35 suites** and **37 Docker-backed integration tests across 7 suites**, for **356 passing tests across 42 suites** (up from the historical Phase 4 baseline of 293 tests). Integration coverage exercises real PostgreSQL 17 row-lock ownership fencing, legacy-ready recovery, atomic graph publication/rollback, uncertain-`COMMIT` reconciliation, compiled parser-child execution, BullMQ delivery, and graceful lifecycle shutdown.
+The Phase 6 local verification baseline (`76ab23f`, pending Phase 6 PR merge) records **334 unit tests across 39 suites** and **45 Docker-backed integration tests across 10 suites**, for **379 passing tests across 49 suites** (up from 356 in Phase 5 and 293 in Phase 4). Integration coverage exercises real PostgreSQL 17 + Redis 7 graph zoom, blast-radius BFS with independent oracles, hub boundaries, shared Redis rate limiting, ownership fencing, atomic graph publication, compiled parser-child execution, and graceful lifecycle shutdown.
 
 The post-correction regression evaluation scored a purposive sample of 30 of 234 supported source files (approximately 12.8%) across `pmndrs/zustand`, `vercel/nextjs-subscription-payments` and `shadcn-ui/taxonomy`, all pinned to specific commits.
 
@@ -87,6 +87,13 @@ Phase 5.6 validated full standalone-worker ingestion (mounted local tarballs, is
 - **Cgroup memory & hygiene:** Pre-shutdown kernel `memory.peak` = **211.11 MiB** (`221,368,320` bytes, `41.23%`), startup -> final idle `memory.current` = `45.54` -> `96.29 MiB` (`+50.75 MiB`), zero OOM/OOM-kill/`max`/swap events, zero failed jobs/duplicate rows/leftover workspaces, graceful exit `0`, and verified non-forced cleanup.
 - **Caveats:** Standalone/local-tarball scope differs from Phase 4's embedded live smoke; parity covers persisted `nodes`/`edges` projections only (not full `AnalysisOutput` digests); synthetic runs test repeat determinism only; observed `+50.75 MiB` idle growth does not prove leak-free long-term operation; and results do not establish p95 latency or universal 500-file capacity. See [docs/phase-5-graph-persistence.md](./docs/phase-5-graph-persistence.md).
 
+### Phase 6.5 Graph Query API & Blast-Radius Validation (512 MiB Linux Cgroup)
+
+Phase 6.5 validated all five HTTP graph endpoints under `512 MiB` (`memory.swap.max = 0`, external PostgreSQL 17 and Redis 7) across combined original, supplemental, and final recovery runs (no production code changes required):
+
+- **Latency & correctness:** 700/700 valid primary blast-radius responses across 7 workloads (p95 `6.00 ms`–`48.86 ms`, all `< 200 ms`, 7/7 representative node-hop oracle parity), 150/150 valid secondary endpoint responses (p95 `13.41 ms`–`114.28 ms`), and verified non-overlapping edge pagination (`10.51 ms` / `8.73 ms`, `n = 1` each).
+- **Resources & guards:** Pre-shutdown cgroup peaks of **75.07 MiB** standalone (`+24.84 MiB` idle delta) and **188.46 MiB** embedded (`+10.16 MiB` idle delta), zero recorded OOM events with swap disabled, verified `422` scope/budget rejections, shared `429` rate-limit isolation and recovery, embedded parser/read overlap, and active-DB `SIGTERM` drain (`HTTP 200`, `exit 0`). Local Docker observations are not hosted production latency or leak-free guarantees. See [docs/phase-6-graph-queries.md](./docs/phase-6-graph-queries.md).
+
 ## Prerequisites
 
 - Node.js 24 LTS (see `.nvmrc`)
@@ -121,13 +128,14 @@ npm run test:integration
 
 Local Docker endpoints use PostgreSQL at `127.0.0.1:5432` and Redis at `127.0.0.1:6380`. The integration tests use the configured local environment rather than a production database.
 
-For standalone static analysis evaluation and benchmark context, follow [scripts/README.md](./scripts/README.md). Atomic graph persistence (Phase 5) is complete; Phase 6 (Graph Query APIs, Blast Radius and Hub Detection) is the next implementation phase.
+For standalone static analysis evaluation and benchmark context, follow [scripts/README.md](./scripts/README.md). Graph Query APIs, Blast Radius and Hub Detection (Phase 6) are complete on `feat/phase-6-graph-queries` (pending PR merge); **Phase 7** (Citation-Grounded Gemini Risk Reports) is the next implementation milestone.
 
 <!-- CI bootstrap verified -->
 
 ## Development and Project Handoff
 
 - [Contributing and Development Workflow](CONTRIBUTING.md) — development standards, incremental Git checkpoints, verification requirements, and contribution rules.
+- [Phase 6 Graph Queries & Blast-Radius Report](docs/phase-6-graph-queries.md) — HTTP query contracts, semantic zoom, bounded BFS blast radius, hub semantics, rate limiting, admission, and Linux benchmark evidence.
 - [Phase 5 Graph Persistence Report](docs/phase-5-graph-persistence.md) — schema, ownership fencing, legacy recovery, atomic publication, count invariants, and Linux benchmark evidence.
 - [Phase 4 Parser Isolation Report](docs/phase-4-parser-isolation.md) — preserved historical Phase 4 parser isolation and embedded-worker smoke baseline.
 - [Project Handoff and Context Guide](docs/project-handoff.md) — architecture, implementation status, verified results, known limitations, and continuation guidance.
