@@ -1,5 +1,7 @@
 import {
   DbError,
+  GraphPersistenceValidationError,
+  GraphPublicationAbortedError,
   PG_TRANSACTION_RESOLUTION_UNKNOWN_CODE,
   validateClaimIngestionAttemptInput,
   type ClaimIngestionAttemptInput,
@@ -7,6 +9,9 @@ import {
   type IngestionAttemptOwnership,
   type IngestionJobRecord,
   type IngestionRepository,
+  type PublishRepositoryGraphInput,
+  type PublishRepositoryGraphResult,
+  type ReconcilePublishedAttemptResult,
   type RepositoryRecord,
   type RepositoryStatus,
   type TouchHeartbeatResult,
@@ -67,8 +72,8 @@ function makeFakeValidatedResult(): ValidatedAnalysisResult {
     edges: [],
     warnings: [],
     stats: {
-      discoveredFilesCount: 2,
-      parsedFilesCount: 2,
+      discoveredFilesCount: 0,
+      parsedFilesCount: 0,
       skippedSyntaxErrorFilesCount: 0,
       skippedOversizedFilesCount: 0,
       configFilesCount: 2,
@@ -202,6 +207,13 @@ function makeFakeRepository(
       ownership: IngestionAttemptOwnership,
       input: TransitionJobStageInput,
     ) => Promise<TransitionJobStageResult> | undefined;
+    readonly onPublish?: (
+      ownership: IngestionAttemptOwnership,
+      input: PublishRepositoryGraphInput,
+    ) => Promise<PublishRepositoryGraphResult> | undefined;
+    readonly onReconcile?: (
+      ownership: IngestionAttemptOwnership,
+    ) => Promise<ReconcilePublishedAttemptResult>;
   } = {},
 ) {
   const claims: ClaimIngestionAttemptInput[] = [];
@@ -209,12 +221,21 @@ function makeFakeRepository(
     readonly ownership: IngestionAttemptOwnership;
     readonly input: TransitionJobStageInput;
   }[] = [];
+  const publications: {
+    readonly ownership: IngestionAttemptOwnership;
+    readonly input: PublishRepositoryGraphInput;
+  }[] = [];
+  const reconciliations: IngestionAttemptOwnership[] = [];
   const heartbeatNowArgs: (Date | undefined)[] = [];
   let heartbeatCount = 0;
 
   const repository: Pick<
     IngestionRepository,
-    'claimIngestionAttempt' | 'transitionJobStage' | 'touchJobHeartbeat'
+    | 'claimIngestionAttempt'
+    | 'transitionJobStage'
+    | 'touchJobHeartbeat'
+    | 'publishRepositoryGraph'
+    | 'reconcilePublishedAttempt'
   > = {
     claimIngestionAttempt(input): Promise<ClaimIngestionAttemptResult> {
       claims.push(input);
@@ -274,12 +295,45 @@ function makeFakeRepository(
         updatedAt: now ?? new Date(),
       });
     },
+    publishRepositoryGraph(ownership, input): Promise<PublishRepositoryGraphResult> {
+      publications.push({ ownership, input });
+      const custom = options.onPublish?.(ownership, input);
+      if (custom !== undefined) {
+        return custom;
+      }
+      const pair = makeFakeRepoAndJob('ready', ownership.attemptGeneration);
+      const now = input.now ?? new Date();
+      return Promise.resolve({
+        outcome: 'published',
+        applied: true,
+        repository: { ...pair.repository, graphPersistedAt: now },
+        job: { ...pair.job, progressPct: 100 },
+        persistedNodeCount: input.output.nodes.length,
+        persistedEdgeCount: input.output.edges.length,
+        nodeBatches: input.output.nodes.length > 0 ? 1 : 0,
+        edgeBatches: input.output.edges.length > 0 ? 1 : 0,
+      });
+    },
+    reconcilePublishedAttempt(ownership): Promise<ReconcilePublishedAttemptResult> {
+      reconciliations.push(ownership);
+      if (options.onReconcile !== undefined) {
+        return options.onReconcile(ownership);
+      }
+      const pair = makeFakeRepoAndJob('building_graph', ownership.attemptGeneration);
+      return Promise.resolve({
+        outcome: 'still_owned_unpublished',
+        repository: pair.repository,
+        job: pair.job,
+      });
+    },
   };
 
   return {
     repository,
     claims,
     transitions,
+    publications,
+    reconciliations,
     heartbeatNowArgs,
     getHeartbeatCount: () => heartbeatCount,
   };
@@ -418,9 +472,15 @@ describe('isFinalJobAttempt and classifyIngestionError', () => {
 describe('createIngestionJobProcessor', () => {
   it('claims ownership then executes parsing -> parserAdapter -> building_graph -> handoff -> ready with exact inventory and AbortSignal propagation', async () => {
     const order: string[] = [];
-    const { repository, claims, transitions } = makeFakeRepository({
+    const { repository, claims, transitions, publications } = makeFakeRepository({
       onTransition: (_ownership, t) => {
         order.push(`db:${t.toStatus}`);
+        return undefined;
+      },
+      onPublish: (_ownership, input) => {
+        order.push('db:publish_ready');
+        capturedSignals.push(input.signal);
+        return undefined;
       },
     });
     const { logger } = makeFakeLogger();
@@ -460,7 +520,7 @@ describe('createIngestionJobProcessor', () => {
       extractRepo: fakeExtract,
       parserAdapter,
       shutdownSignal: shutdownCtrl.signal,
-      analysisResultHandoff: (ctx) => {
+      beforeGraphPublish: (ctx) => {
         order.push('handoff');
         capturedSignals.push(ctx.signal);
         capturedHandoffs.push(ctx);
@@ -478,7 +538,7 @@ describe('createIngestionJobProcessor', () => {
       'parse',
       'db:building_graph',
       'handoff',
-      'db:ready',
+      'db:publish_ready',
     ]);
     expect(
       transitions.map((t) => [
@@ -489,8 +549,9 @@ describe('createIngestionJobProcessor', () => {
     ).toEqual([
       [2, 'parsing', STAGE_PROGRESS.parsing],
       [2, 'building_graph', STAGE_PROGRESS.buildingGraph],
-      [2, 'ready', STAGE_PROGRESS.ready],
     ]);
+    expect(publications).toHaveLength(1);
+    expect(publications[0]?.ownership.attemptGeneration).toBe(2);
     expect(transitions[0]?.input.fileCount).toBe(2);
     expect(transitions[0]?.input.skippedFilesCount).toBe(3);
     expect(capturedParserInputs).toEqual([
@@ -500,14 +561,15 @@ describe('createIngestionJobProcessor', () => {
         configFiles: SAMPLE_WORKSPACE.configFiles,
       },
     ]);
-    expect(capturedSignals).toHaveLength(3);
+    expect(capturedSignals).toHaveLength(4);
     expect(capturedSignals.every((s) => s !== undefined && !s.aborted)).toBe(true);
     expect(capturedHandoffs).toHaveLength(1);
     expect(capturedHandoffs[0]?.repositoryId).toBe(SAMPLE_JOB_DATA.repoId);
   });
 
   it('omits explicit now timestamp on DB mutations when deps.now is not provided (preserving post-lock DB timestamps)', async () => {
-    const { repository, claims, transitions, heartbeatNowArgs } = makeFakeRepository();
+    const { repository, claims, transitions, publications, heartbeatNowArgs } =
+      makeFakeRepository();
     const processJob = createIngestionJobProcessor({
       repository,
       logger: makeFakeLogger().logger,
@@ -528,6 +590,7 @@ describe('createIngestionJobProcessor', () => {
     await processJob(makeJob());
     expect(claims[0]?.now).toBeUndefined();
     expect(transitions.every((t) => t.input.now === undefined)).toBe(true);
+    expect(publications[0]?.input.now).toBeUndefined();
     expect(heartbeatNowArgs.length).toBeGreaterThanOrEqual(1);
     expect(heartbeatNowArgs.every((arg) => arg === undefined)).toBe(true);
   });
@@ -834,7 +897,7 @@ describe('createIngestionJobProcessor', () => {
       heartbeatIntervalMs: 0,
       extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
       parserAdapter: makeFakeParserAdapter(),
-      analysisResultHandoff: () => {
+      beforeGraphPublish: () => {
         handoffCalled = true;
         return Promise.resolve();
       },
@@ -860,8 +923,7 @@ describe('createIngestionJobProcessor', () => {
       heartbeatIntervalMs: 0,
       extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
       parserAdapter: makeFakeParserAdapter(),
-      analysisResultHandoff: () =>
-        Promise.reject(new Error(`DB insert failed near ${secretSnippet}`)),
+      beforeGraphPublish: () => Promise.reject(new Error(`DB insert failed near ${secretSnippet}`)),
     });
 
     await expect(processJob(makeJob({ attemptsMade: 1, opts: { attempts: 2 } }))).rejects.toSatisfy(
@@ -939,7 +1001,7 @@ describe('createIngestionJobProcessor', () => {
       shutdownSignal: cancelBeforeReady.signal,
       extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
       parserAdapter: makeFakeParserAdapter(),
-      analysisResultHandoff: () => {
+      beforeGraphPublish: () => {
         cancelBeforeReady.abort();
         return Promise.resolve();
       },
@@ -1100,6 +1162,7 @@ describe('createIngestionJobProcessor', () => {
     const postClaimRepo = makeFakeRepository({
       onTransition: (_ownership, t) => {
         events.push(`db:${t.toStatus}`);
+        return undefined;
       },
     });
     const lifecycle = createWorkerServiceLifecycle({
@@ -1272,12 +1335,20 @@ describe('createIngestionJobProcessor', () => {
     );
     expect(claimFailRepo.transitions).toEqual([]);
 
-    const readyFailRepo = makeFakeRepository({
-      onTransition: (_ownership, input) =>
-        input.toStatus === 'ready' ? Promise.reject(uncertainErr) : undefined,
+    // 2. Uncertain publish error reconciled as committed under our ownership -> completes cleanly
+    const committedPubRepo = makeFakeRepository({
+      onPublish: () => Promise.reject(uncertainErr),
+      onReconcile: (ownership) => {
+        const pair = makeFakeRepoAndJob('ready', ownership.attemptGeneration);
+        return Promise.resolve({
+          outcome: 'published_by_owner',
+          repository: { ...pair.repository, graphPersistedAt: new Date() },
+          job: { ...pair.job, progressPct: 100 },
+        });
+      },
     });
     const p2 = createIngestionJobProcessor({
-      repository: readyFailRepo.repository,
+      repository: committedPubRepo.repository,
       logger: makeFakeLogger().logger,
       maxSupportedFiles: 500,
       maxRepoSizeMb: 50,
@@ -1285,13 +1356,115 @@ describe('createIngestionJobProcessor', () => {
       extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
       parserAdapter: makeFakeParserAdapter(),
     });
-    await expect(p2(makeJob({ attemptsMade: 1, opts: { attempts: 2 } }))).rejects.toThrow(
-      'Database temporarily unavailable during repository ingestion.',
-    );
-    expect(readyFailRepo.transitions.map((t) => t.input.toStatus)).toEqual([
+    await expect(p2(makeJob({ attemptsMade: 1, opts: { attempts: 2 } }))).resolves.toBeUndefined();
+    expect(committedPubRepo.reconciliations).toHaveLength(1);
+    expect(committedPubRepo.transitions.map((t) => t.input.toStatus)).toEqual([
       'parsing',
       'building_graph',
-      'ready',
+    ]);
+
+    // 3. Uncertain publish error where reconciliation fails -> preserves non-terminal (no failed write)
+    const unavailableReconcileRepo = makeFakeRepository({
+      onPublish: () => Promise.reject(uncertainErr),
+      onReconcile: () => Promise.reject(new Error('Connection terminated unexpectedly')),
+    });
+    const p3 = createIngestionJobProcessor({
+      repository: unavailableReconcileRepo.repository,
+      logger: makeFakeLogger().logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+      parserAdapter: makeFakeParserAdapter(),
+    });
+    await expect(p3(makeJob({ attemptsMade: 1, opts: { attempts: 2 } }))).rejects.toThrow(
+      'Database temporarily unavailable during repository ingestion.',
+    );
+    expect(unavailableReconcileRepo.transitions.map((t) => t.input.toStatus)).toEqual([
+      'parsing',
+      'building_graph',
+    ]);
+
+    // 4. Uncertain publish error authoritatively confirmed rolled back on final attempt -> marks failed
+    const confirmedRollbackRepo = makeFakeRepository({
+      onPublish: () => Promise.reject(uncertainErr),
+      onReconcile: (ownership) => {
+        const pair = makeFakeRepoAndJob('building_graph', ownership.attemptGeneration);
+        return Promise.resolve({
+          outcome: 'still_owned_unpublished',
+          repository: pair.repository,
+          job: pair.job,
+        });
+      },
+    });
+    const p4 = createIngestionJobProcessor({
+      repository: confirmedRollbackRepo.repository,
+      logger: makeFakeLogger().logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+      parserAdapter: makeFakeParserAdapter(),
+    });
+    await expect(p4(makeJob({ attemptsMade: 1, opts: { attempts: 2 } }))).rejects.toThrow(
+      'Database temporarily unavailable during repository ingestion.',
+    );
+    expect(confirmedRollbackRepo.transitions.map((t) => t.input.toStatus)).toEqual([
+      'parsing',
+      'building_graph',
+      'failed',
+    ]);
+
+    // 5. GraphPersistenceValidationError -> non-retryable UnrecoverableError + fenced failed
+    const invalidGraphRepo = makeFakeRepository({
+      onPublish: () =>
+        Promise.reject(
+          new GraphPersistenceValidationError('PARENT_CYCLE_DETECTED', 'Cyclic parent graph'),
+        ),
+    });
+    const p5 = createIngestionJobProcessor({
+      repository: invalidGraphRepo.repository,
+      logger: makeFakeLogger().logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+      parserAdapter: makeFakeParserAdapter(),
+    });
+    await expect(p5(makeJob({ attemptsMade: 0, opts: { attempts: 2 } }))).rejects.toBeInstanceOf(
+      UnrecoverableError,
+    );
+    expect(invalidGraphRepo.transitions.map((t) => t.input.toStatus)).toEqual([
+      'parsing',
+      'building_graph',
+      'failed',
+    ]);
+    expect(invalidGraphRepo.transitions[2]?.input.errorCode).toBe('GRAPH_VALIDATION_ERROR');
+
+    // 6. GraphPublicationAbortedError on shutdown -> throws IngestionCancelledError without failed on non-final
+    const shutdownCtrl = new AbortController();
+    const abortedPubRepo = makeFakeRepository({
+      onPublish: () => {
+        shutdownCtrl.abort();
+        return Promise.reject(new GraphPublicationAbortedError());
+      },
+    });
+    const p6 = createIngestionJobProcessor({
+      repository: abortedPubRepo.repository,
+      logger: makeFakeLogger().logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      shutdownSignal: shutdownCtrl.signal,
+      extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+      parserAdapter: makeFakeParserAdapter(),
+    });
+    await expect(p6(makeJob({ attemptsMade: 0, opts: { attempts: 2 } }))).rejects.toBeInstanceOf(
+      IngestionCancelledError,
+    );
+    expect(abortedPubRepo.transitions.map((t) => t.input.toStatus)).toEqual([
+      'parsing',
+      'building_graph',
     ]);
   });
 });

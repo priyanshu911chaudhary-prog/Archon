@@ -1,5 +1,7 @@
 import {
   DbError,
+  GraphPersistenceValidationError,
+  GraphPublicationAbortedError,
   classifyDbError,
   type IngestionAttemptOwnership,
   type IngestionRepository,
@@ -15,7 +17,6 @@ import {
 import {
   ParserIntegrationError,
   classifyParserRunnerError,
-  noopAnalysisResultHandoff,
   type AnalysisResultHandoff,
   type ProductionParserAdapter,
 } from './parser-integration.js';
@@ -90,16 +91,9 @@ export interface ClassifiedIngestionError {
   readonly isCancellation: boolean;
   /**
    * True when a database error has uncertain commit resolution; callers must NOT
-   * assume rollback and must NOT overwrite state with a terminal `failed` write.
+   * assume rollback and must reconcile before making terminal failure decisions.
    */
   readonly commitOutcomeUncertain: boolean;
-  /**
-   * True for startup misconfiguration or fatal parser quarantine incidents.
-   * Distinct from the lower-level runner's own `retryable: false` flag:
-   * the affected worker shuts down and never reuses the runner, while a cleanly
-   * settled active attempt may be retried by a healthy replacement worker within
-   * BullMQ's existing bounded attempt limit.
-   */
   readonly isInfrastructureFailure: boolean;
   readonly fatal: boolean;
   readonly startupFailure: boolean;
@@ -108,7 +102,11 @@ export interface ClassifiedIngestionError {
 export interface CreateIngestionProcessorDependencies {
   readonly repository: Pick<
     IngestionRepository,
-    'claimIngestionAttempt' | 'transitionJobStage' | 'touchJobHeartbeat'
+    | 'claimIngestionAttempt'
+    | 'transitionJobStage'
+    | 'touchJobHeartbeat'
+    | 'publishRepositoryGraph'
+    | 'reconcilePublishedAttempt'
   >;
   readonly logger: Pick<Logger, 'info' | 'warn' | 'error'>;
   readonly githubToken?: string;
@@ -120,9 +118,13 @@ export interface CreateIngestionProcessorDependencies {
   readonly extractRepo?: ExtractRepoFn;
   /** Explicitly required parser adapter (no silent no-op fallback in production). */
   readonly parserAdapter: IngestionParserAdapter;
-  /** Phase 5 persistence seam invoked after `building_graph` succeeds and before `ready`. */
-  readonly analysisResultHandoff?: AnalysisResultHandoff;
-  /** Lifecycle shutdown cancellation signal propagated to extraction, parsing, and handoff. */
+  /**
+   * Optional pre-publication observation/test hook invoked AFTER `building_graph` and
+   * strictly BEFORE mandatory atomic `repository.publishRepositoryGraph(...)`.
+   * Cannot bypass atomic graph publication.
+   */
+  readonly beforeGraphPublish?: AnalysisResultHandoff;
+  /** Lifecycle shutdown cancellation signal propagated to extraction, parsing, and pre-publish hook. */
   readonly shutdownSignal?: AbortSignal;
   /** Synchronous fatal-quarantine signal used to stop DB heartbeat scheduling immediately. */
   readonly fatalSignal?: AbortSignal;
@@ -165,12 +167,12 @@ export function classifyIngestionError(err: unknown): ClassifiedIngestionError {
     };
   }
 
-  if (err instanceof IngestionCancelledError) {
+  if (err instanceof IngestionCancelledError || err instanceof GraphPublicationAbortedError) {
     return {
       retryable: true,
-      errorCode: err.code,
-      errorMessage: err.message,
-      errorDetail: err.code,
+      errorCode: 'INGESTION_CANCELLED',
+      errorMessage: SAFE_INGESTION_CANCELLED_MESSAGE,
+      errorDetail: 'INGESTION_CANCELLED',
       isParserError: false,
       isCancellation: true,
       commitOutcomeUncertain: false,
@@ -207,6 +209,21 @@ export function classifyIngestionError(err: unknown): ClassifiedIngestionError {
       errorDetail: err.code === 'TARBALL_CANCELLED' ? 'TARBALL_CANCELLED' : err.message,
       isParserError: false,
       isCancellation: err.code === 'TARBALL_CANCELLED',
+      commitOutcomeUncertain: false,
+      isInfrastructureFailure: false,
+      fatal: false,
+      startupFailure: false,
+    };
+  }
+
+  if (err instanceof GraphPersistenceValidationError) {
+    return {
+      retryable: false,
+      errorCode: 'GRAPH_VALIDATION_ERROR',
+      errorMessage: 'Static analysis produced an invalid repository graph.',
+      errorDetail: err.reasonCode,
+      isParserError: false,
+      isCancellation: false,
       commitOutcomeUncertain: false,
       isInfrastructureFailure: false,
       fatal: false,
@@ -266,7 +283,6 @@ export function createIngestionJobProcessor(
   deps: CreateIngestionProcessorDependencies,
 ): (job: IngestionProcessorJob) => Promise<void> {
   const extractRepo = deps.extractRepo ?? withExtractedRepo;
-  const analysisResultHandoff = deps.analysisResultHandoff ?? noopAnalysisResultHandoff;
   const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
   const explicitNow = (): Date | undefined => deps.now?.();
 
@@ -280,9 +296,11 @@ export function createIngestionJobProcessor(
     const ownershipState: {
       current: IngestionAttemptOwnership | null;
       lostReason: 'ownership_lost' | 'terminal' | 'missing' | 'identity_mismatch' | null;
+      publicationDispatched: boolean;
     } = {
       current: null,
       lostReason: null,
+      publicationDispatched: false,
     };
 
     const onShutdownAbort = (): void => {
@@ -592,37 +610,62 @@ export function createIngestionJobProcessor(
                 attemptGeneration: ownership.attemptGeneration,
                 transitionOutcome: graphTransition.outcome,
               },
-              'Stopping ingestion before building_graph handoff because attempt no longer owns repository',
+              'Stopping ingestion before graph publication because attempt no longer owns repository',
             );
             await stopAndDrainHeartbeat();
             return;
           }
           progressState.currentPct = STAGE_PROGRESS.buildingGraph;
 
-          // 6. Check cancellation before invoking Phase 5 handoff seam
+          // 6. Optional pre-publish observation hook (cannot bypass atomic graph publication)
+          assertNotCancelledOrFatal();
+          if (deps.beforeGraphPublish !== undefined) {
+            await deps.beforeGraphPublish({
+              repositoryId: ownership.repoId,
+              jobId: ownership.jobId,
+              commitSha: ownership.commitSha,
+              result: analysisResult,
+              signal: jobAbortController.signal,
+            });
+          }
+
+          // 7. Cancellation cutoff immediately before dispatching atomic graph publication
           assertNotCancelledOrFatal();
 
-          await analysisResultHandoff({
-            repositoryId: ownership.repoId,
-            jobId: ownership.jobId,
-            commitSha: ownership.commitSha,
-            result: analysisResult,
+          ownershipState.publicationDispatched = true;
+          const publishResult = await deps.repository.publishRepositoryGraph(ownership, {
+            output: analysisResult.output,
             signal: jobAbortController.signal,
-          });
-
-          // 7. Cancellation cutoff immediately before dispatching transitional ready
-          assertNotCancelledOrFatal();
-
-          const readyTransition = await deps.repository.transitionJobStage(ownership, {
-            toStatus: 'ready',
-            progressPct: STAGE_PROGRESS.ready,
             ...(deps.now !== undefined ? { now: deps.now() } : {}),
           });
 
-          if (readyTransition.applied) {
+          if (publishResult.outcome === 'published') {
             progressState.currentPct = STAGE_PROGRESS.ready;
+            safeLog(
+              'info',
+              {
+                repoId: ownership.repoId,
+                jobId: ownership.jobId,
+                attemptGeneration: ownership.attemptGeneration,
+                persistedNodeCount: publishResult.persistedNodeCount,
+                persistedEdgeCount: publishResult.persistedEdgeCount,
+                nodeBatches: publishResult.nodeBatches,
+                edgeBatches: publishResult.edgeBatches,
+              },
+              'Published repository graph atomically',
+            );
           } else {
-            ownershipState.lostReason ??= readyTransition.outcome;
+            ownershipState.lostReason ??= publishResult.outcome;
+            safeLog(
+              'info',
+              {
+                repoId: ownership.repoId,
+                jobId: ownership.jobId,
+                attemptGeneration: ownership.attemptGeneration,
+                publishOutcome: publishResult.outcome,
+              },
+              'Skipped atomic graph publication because attempt no longer owns repository',
+            );
           }
           await stopAndDrainHeartbeat();
         },
@@ -690,6 +733,66 @@ export function createIngestionJobProcessor(
 
       const activeOwnership = ownershipState.current;
 
+      // Authoritative locked reconciliation when atomic graph publication failed with uncertain COMMIT
+      if (
+        ownershipState.publicationDispatched &&
+        activeOwnership !== null &&
+        classified.commitOutcomeUncertain
+      ) {
+        try {
+          const reconciled = await deps.repository.reconcilePublishedAttempt(activeOwnership);
+          if (reconciled.outcome === 'published_by_owner') {
+            safeLog(
+              'info',
+              safeLogContext,
+              'Reconciled uncertain graph publication as committed under current ownership',
+            );
+            return;
+          }
+          if (reconciled.outcome !== 'still_owned_unpublished') {
+            safeLog(
+              'info',
+              { ...safeLogContext, reconcileOutcome: reconciled.outcome },
+              'Reconciled uncertain graph publication as superseded or terminal; exiting cleanly',
+            );
+            return;
+          }
+          // Authoritatively confirmed rolled back while still owned by this attempt
+          if (isFinalJobAttempt(job)) {
+            safeLog(
+              'error',
+              safeLogContext,
+              'Confirmed uncertain graph publication rolled back on final attempt; marking failed',
+            );
+            await markFailedSafe(activeOwnership, classified);
+          } else {
+            safeLog(
+              'warn',
+              safeLogContext,
+              'Confirmed uncertain graph publication rolled back; leaving non-terminal for retry',
+            );
+          }
+          // eslint-disable-next-line preserve-caught-error -- Deliberately discard untrusted raw cause at the BullMQ security boundary.
+          throw new Error(classified.errorMessage);
+        } catch (reconcileErr) {
+          if (
+            reconcileErr instanceof Error &&
+            reconcileErr.message === classified.errorMessage &&
+            !(reconcileErr instanceof DbError)
+          ) {
+            throw reconcileErr;
+          }
+          const reconcileClass = classifyDbError(reconcileErr);
+          safeLog(
+            'warn',
+            { ...safeLogContext, reconcileDbCategory: reconcileClass.category },
+            'Could not reconcile uncertain graph publication; preserving non-terminal state',
+          );
+          // eslint-disable-next-line preserve-caught-error -- Deliberately discard untrusted raw cause at the BullMQ security boundary.
+          throw new Error(classified.errorMessage);
+        }
+      }
+
       if (!classified.retryable) {
         safeLog(
           'warn',
@@ -733,6 +836,9 @@ export function createIngestionJobProcessor(
         );
       }
 
+      if (err instanceof GraphPublicationAbortedError) {
+        throw new IngestionCancelledError();
+      }
       if (
         err instanceof TarballExtractionError ||
         err instanceof ParserIntegrationError ||

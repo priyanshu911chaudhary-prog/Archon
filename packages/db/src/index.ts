@@ -37,6 +37,20 @@ export {
   type PgErrorInfo,
 } from './errors.js';
 
+export {
+  GRAPH_BATCH_MAX_BYTES,
+  GRAPH_EDGE_BATCH_MAX_ROWS,
+  GRAPH_NODE_BATCH_MAX_ROWS,
+  GraphPersistenceValidationError,
+  GraphPublicationAbortedError,
+  hasUnsafePgText,
+  normalizeSnippetText,
+  prepareGraphPersistencePlan,
+  type GraphBatchOptions,
+  type GraphPersistencePlan,
+  type GraphValidationReasonCode,
+} from './graph-persistence.js';
+
 export { getMigrationsFolder, runMigrations } from './migrate.js';
 
 export {
@@ -49,6 +63,7 @@ export {
   DEFAULT_SWEEP_BATCH_SIZE,
   DEFAULT_SWEEP_MAX_BATCHES,
   DEFAULT_SWEEP_MAX_DURATION_MS,
+  DEFAULT_GRAPH_PUBLISH_TX_TIMEOUT_CONFIG,
   DEFAULT_TX_TIMEOUT_CONFIG,
   MAX_ATTEMPT_GENERATION,
   MAX_PG_INT32,
@@ -87,6 +102,9 @@ export {
   type IngestionRepository,
   type LockedRepositoryAndJobResult,
   type OwnershipIdentityMismatchReason,
+  type PublishRepositoryGraphInput,
+  type PublishRepositoryGraphResult,
+  type ReconcilePublishedAttemptResult,
   type RepositoryWithJob,
   type RowLockMode,
   type SweepStaleJobsInput,

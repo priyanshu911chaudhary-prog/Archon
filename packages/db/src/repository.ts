@@ -1,3 +1,4 @@
+import type { AnalysisOutput } from '@archon/shared';
 import {
   and,
   asc,
@@ -14,10 +15,17 @@ import {
 import type { ArchonDatabase } from './client.js';
 import { DbError, classifyDbError, extractPgErrorInfo, isPgUniqueViolation } from './errors.js';
 import {
+  GraphPublicationAbortedError,
+  prepareGraphPersistencePlan,
+  type GraphBatchOptions,
+} from './graph-persistence.js';
+import {
   ACTIVE_REPOSITORY_STATUSES,
   TERMINAL_INGESTION_JOB_STAGES,
   TERMINAL_REPOSITORY_STATUSES,
+  edges,
   ingestionJobs,
+  nodes,
   repositories,
   type IngestionJobRecord,
   type IngestionJobStage,
@@ -177,15 +185,89 @@ export type ValidatedClaimIngestionAttemptInput =
       >;
     };
 
-export type FencedTransitionStage = Exclude<IngestionJobStage, 'queued'>;
+/**
+ * Worker stage transitions permitted via `transitionJobStage`.
+ * `'ready'` is excluded: transitioning to `'ready'` requires atomic graph publication
+ * via `publishRepositoryGraph`, which persists nodes/edges, sets `graph_persisted_at`,
+ * and enforces `progressPct = 100`.
+ */
+export type FencedTransitionStage = Exclude<IngestionJobStage, 'queued' | 'ready'>;
 
 const FENCED_TRANSITION_STAGES = new Set<string>([
   'cloning',
   'parsing',
   'building_graph',
-  'ready',
   'failed',
 ]);
+
+export interface PublishRepositoryGraphInput {
+  readonly output: AnalysisOutput;
+  readonly batchOptions?: GraphBatchOptions;
+  readonly timeouts?: TransactionTimeoutConfig;
+  /** Optional cancellation signal checked between batches and before commit. */
+  readonly signal?: AbortSignal;
+  readonly now?: Date;
+}
+
+export type PublishRepositoryGraphResult =
+  | {
+      readonly outcome: 'published';
+      readonly applied: true;
+      readonly repository: RepositoryRecord;
+      readonly job: IngestionJobRecord;
+      readonly persistedNodeCount: number;
+      readonly persistedEdgeCount: number;
+      readonly nodeBatches: number;
+      readonly edgeBatches: number;
+    }
+  | {
+      readonly outcome: 'ownership_lost';
+      readonly applied: false;
+      readonly storedGeneration: number;
+      readonly expectedGeneration: number;
+    }
+  | {
+      readonly outcome: 'terminal';
+      readonly applied: false;
+      readonly status: RepositoryStatus;
+    }
+  | {
+      readonly outcome: 'missing';
+      readonly applied: false;
+    }
+  | {
+      readonly outcome: 'identity_mismatch';
+      readonly applied: false;
+      readonly reason: OwnershipIdentityMismatchReason;
+    };
+
+export type ReconcilePublishedAttemptResult =
+  | {
+      readonly outcome: 'published_by_owner';
+      readonly repository: RepositoryRecord;
+      readonly job: IngestionJobRecord;
+    }
+  | {
+      readonly outcome: 'still_owned_unpublished';
+      readonly repository: RepositoryRecord;
+      readonly job: IngestionJobRecord;
+    }
+  | {
+      readonly outcome: 'ownership_lost';
+      readonly storedGeneration: number;
+      readonly expectedGeneration: number;
+    }
+  | {
+      readonly outcome: 'terminal';
+      readonly status: RepositoryStatus;
+    }
+  | {
+      readonly outcome: 'missing';
+    }
+  | {
+      readonly outcome: 'identity_mismatch';
+      readonly reason: OwnershipIdentityMismatchReason;
+    };
 
 /**
  * Identity fields (`repoId`, `jobId`, `bullmqJobId`, `commitSha`, `attemptGeneration`)
@@ -370,6 +452,13 @@ export interface IngestionRepository {
     ownership: IngestionAttemptOwnership,
     input: TransitionJobStageInput,
   ): Promise<TransitionJobStageResult>;
+  publishRepositoryGraph(
+    ownership: IngestionAttemptOwnership,
+    input: PublishRepositoryGraphInput,
+  ): Promise<PublishRepositoryGraphResult>;
+  reconcilePublishedAttempt(
+    ownership: IngestionAttemptOwnership,
+  ): Promise<ReconcilePublishedAttemptResult>;
   failQueuedJobOnEnqueueError(
     input: FailQueuedJobOnEnqueueErrorInput,
   ): Promise<FailQueuedJobOnEnqueueErrorResult>;
@@ -470,6 +559,12 @@ export const DEFAULT_TX_TIMEOUT_CONFIG: TransactionTimeoutConfig = Object.freeze
   lockTimeoutMs: 3_000,
   statementTimeoutMs: 5_000,
   transactionTimeoutMs: 10_000,
+});
+
+export const DEFAULT_GRAPH_PUBLISH_TX_TIMEOUT_CONFIG: TransactionTimeoutConfig = Object.freeze({
+  lockTimeoutMs: 5_000,
+  statementTimeoutMs: 15_000,
+  transactionTimeoutMs: 45_000,
 });
 
 export type RowLockMode = 'wait' | 'nowait';
@@ -1366,6 +1461,199 @@ export function createIngestionRepository(db: ArchonDatabase): IngestionReposito
   }
 
   /**
+   * Atomically validates `AnalysisOutput`, acquires repository-first locks, verifies active
+   * ownership and `'building_graph'` stage, inserts parent-before-child nodes and edges in
+   * bounded batches (checking `signal` between batches and before commit), reconciles
+   * repository file/skip counts, sets `graph_persisted_at`, and transitions to `'ready'`
+   * with `progressPct = 100` in ONE transaction.
+   */
+  async function publishRepositoryGraph(
+    ownership: IngestionAttemptOwnership,
+    input: PublishRepositoryGraphInput,
+  ): Promise<PublishRepositoryGraphResult> {
+    assertValidAttemptOwnership(ownership);
+    const assertNotAborted = (): void => {
+      if (input.signal?.aborted === true) {
+        throw new GraphPublicationAbortedError();
+      }
+    };
+    assertNotAborted();
+
+    const explicitNow = validateExplicitDate(input.now);
+    const timeouts = input.timeouts ?? DEFAULT_GRAPH_PUBLISH_TX_TIMEOUT_CONFIG;
+    validateTransactionTimeouts(timeouts);
+
+    // Validate complete graph & build bounded UUID-resolved batches BEFORE opening SQL tx
+    const plan = prepareGraphPersistencePlan(ownership.repoId, input.output, input.batchOptions);
+    assertNotAborted();
+
+    return runBoundedTransaction(
+      db,
+      async (tx): Promise<PublishRepositoryGraphResult> => {
+        const verified = await verifyLockedAttemptOwnership(tx, ownership, 'wait');
+        if (verified.outcome !== 'verified') {
+          return { ...verified, applied: false };
+        }
+        assertNotAborted();
+
+        if (
+          verified.repository.status !== 'building_graph' ||
+          verified.job.stage !== 'building_graph'
+        ) {
+          throw new DbError(
+            'DB_VALIDATION_ERROR',
+            `Cannot publish graph unless repository and job are in building_graph stage (found repo=${verified.repository.status}, job=${verified.job.stage}).`,
+          );
+        }
+
+        const nextFileCount = Math.max(
+          verified.repository.fileCount,
+          input.output.stats.discoveredFilesCount,
+          plan.fileNodeCount,
+        );
+        const nextSkippedFilesCount =
+          verified.repository.skippedFilesCount +
+          input.output.stats.skippedSyntaxErrorFilesCount +
+          input.output.stats.skippedOversizedFilesCount;
+        assertNonNegativePgInt32('fileCount', nextFileCount);
+        assertNonNegativePgInt32('skippedFilesCount', nextSkippedFilesCount);
+
+        for (const nodeBatch of plan.nodeBatches) {
+          assertNotAborted();
+          await tx.insert(nodes).values([...nodeBatch]);
+        }
+
+        for (const edgeBatch of plan.edgeBatches) {
+          assertNotAborted();
+          await tx.insert(edges).values([...edgeBatch]);
+        }
+
+        assertNotAborted();
+        const publishTime = explicitNow ?? new Date();
+        const updatedRepos = await tx
+          .update(repositories)
+          .set({
+            status: 'ready',
+            graphPersistedAt: publishTime,
+            fileCount: nextFileCount,
+            skippedFilesCount: nextSkippedFilesCount,
+            updatedAt: publishTime,
+          })
+          .where(
+            and(eq(repositories.id, ownership.repoId), eq(repositories.status, 'building_graph')),
+          )
+          .returning();
+        const repository = updatedRepos[0];
+        if (repository === undefined) {
+          throw new DbError(
+            'DB_QUERY_ERROR',
+            'Failed to mark repository ready during atomic graph publication.',
+          );
+        }
+
+        const startedAt = verified.job.startedAt ?? publishTime;
+        const durationMs = Math.max(0, publishTime.getTime() - startedAt.getTime());
+        const updatedJobs = await tx
+          .update(ingestionJobs)
+          .set({
+            stage: 'ready',
+            progressPct: 100,
+            startedAt,
+            finishedAt: publishTime,
+            durationMs,
+          })
+          .where(
+            and(
+              eq(ingestionJobs.id, ownership.jobId),
+              eq(ingestionJobs.repoId, ownership.repoId),
+              eq(ingestionJobs.stage, 'building_graph'),
+              eq(ingestionJobs.attemptGeneration, ownership.attemptGeneration),
+            ),
+          )
+          .returning();
+        const job = updatedJobs[0];
+        if (job === undefined) {
+          throw new DbError(
+            'DB_QUERY_ERROR',
+            'Failed to mark ingestion job ready during atomic graph publication.',
+          );
+        }
+
+        // Final cooperative abort check before releasing transaction callback to COMMIT
+        assertNotAborted();
+
+        return {
+          outcome: 'published',
+          applied: true,
+          repository,
+          job,
+          persistedNodeCount: plan.nodeCount,
+          persistedEdgeCount: plan.edgeCount,
+          nodeBatches: plan.nodeBatches.length,
+          edgeBatches: plan.edgeBatches.length,
+        };
+      },
+      timeouts,
+    );
+  }
+
+  /**
+   * Acquires repository-first `FOR UPDATE` row locks so reconciliation serializes strictly
+   * after any in-flight publication transaction whose COMMIT acknowledgement was lost.
+   * Requires exact stored BullMQ job identity before declaring publication or ownership.
+   */
+  async function reconcilePublishedAttempt(
+    ownership: IngestionAttemptOwnership,
+  ): Promise<ReconcilePublishedAttemptResult> {
+    assertValidAttemptOwnership(ownership);
+
+    return runBoundedTransaction(db, async (tx): Promise<ReconcilePublishedAttemptResult> => {
+      const locked = await lockRepositoryAndJobForUpdate(
+        tx,
+        ownership.repoId,
+        ownership.jobId,
+        'wait',
+      );
+      if (locked.status !== 'locked') {
+        return { outcome: 'missing' };
+      }
+
+      const { repository, job } = locked;
+      if (repository.commitSha !== ownership.commitSha) {
+        return { outcome: 'identity_mismatch', reason: 'commit_sha_mismatch' };
+      }
+      if (job.bullmqJobId === null) {
+        return { outcome: 'identity_mismatch', reason: 'missing_stored_bullmq_job_id' };
+      }
+      if (job.bullmqJobId !== ownership.bullmqJobId) {
+        return { outcome: 'identity_mismatch', reason: 'stored_bullmq_job_id_mismatch' };
+      }
+      if (
+        isPersistedReadyRepository(repository) &&
+        job.stage === 'ready' &&
+        job.progressPct === 100 &&
+        job.attemptGeneration === ownership.attemptGeneration
+      ) {
+        return { outcome: 'published_by_owner', repository, job };
+      }
+      if (isTerminalRepositoryStatus(repository.status)) {
+        return { outcome: 'terminal', status: repository.status };
+      }
+      if (isTerminalJobStage(job.stage)) {
+        return { outcome: 'terminal', status: job.stage };
+      }
+      if (job.attemptGeneration !== ownership.attemptGeneration) {
+        return {
+          outcome: 'ownership_lost',
+          storedGeneration: job.attemptGeneration,
+          expectedGeneration: ownership.attemptGeneration,
+        };
+      }
+      return { outcome: 'still_owned_unpublished', repository, job };
+    });
+  }
+
+  /**
    * Administrative pre-claim failure helper for API enqueue errors.
    * An enqueue acknowledgement error (e.g. Redis timeout/disconnect) does NOT prove Redis
    * rejected the job—a fast worker may still claim it. This operation therefore transitions
@@ -1869,6 +2157,8 @@ export function createIngestionRepository(db: ArchonDatabase): IngestionReposito
     createOrGetVerifiedEmpty,
     claimIngestionAttempt,
     transitionJobStage,
+    publishRepositoryGraph,
+    reconcilePublishedAttempt,
     failQueuedJobOnEnqueueError,
     attachBullMqJobId,
     touchJobHeartbeat,

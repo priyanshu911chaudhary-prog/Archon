@@ -9,7 +9,10 @@ import {
   assertValidAttemptOwnership,
   computeExpiresAt,
   isLegacyReadyRepository,
+  DbError,
+  GraphPublicationAbortedError,
   isPersistedReadyRepository,
+  prepareGraphPersistencePlan,
   validateClaimIngestionAttemptInput,
   type AttachBullMqJobIdResult,
   type ClaimIngestionAttemptInput,
@@ -24,6 +27,9 @@ import {
   type IngestionJobRecord,
   type IngestionJobStage,
   type IngestionRepository,
+  type PublishRepositoryGraphInput,
+  type PublishRepositoryGraphResult,
+  type ReconcilePublishedAttemptResult,
   type RepositoryRecord,
   type RepositoryStatus,
   type RepositoryWithJob,
@@ -433,6 +439,113 @@ class InMemoryIngestionRepository implements IngestionRepository {
       repository: updatedRepo,
       job: updatedJob,
     });
+  }
+
+  publishRepositoryGraph(
+    ownership: IngestionAttemptOwnership,
+    input: PublishRepositoryGraphInput,
+  ): Promise<PublishRepositoryGraphResult> {
+    if (input.signal?.aborted === true) {
+      return Promise.reject(new GraphPublicationAbortedError());
+    }
+    const plan = prepareGraphPersistencePlan(ownership.repoId, input.output, input.batchOptions);
+    const verified = this.verifyOwnershipSync(ownership);
+    if (verified.outcome !== 'verified') {
+      return Promise.resolve({ ...verified, applied: false });
+    }
+    if (
+      verified.repository.status !== 'building_graph' ||
+      verified.job.stage !== 'building_graph'
+    ) {
+      return Promise.reject(
+        new DbError('DB_VALIDATION_ERROR', 'Repository and job must be in building_graph stage.'),
+      );
+    }
+    const now = input.now ?? new Date();
+    const updatedRepo: RepositoryRecord = {
+      ...verified.repository,
+      status: 'ready',
+      graphPersistedAt: now,
+      fileCount: Math.max(
+        verified.repository.fileCount,
+        input.output.stats.discoveredFilesCount,
+        plan.fileNodeCount,
+      ),
+      skippedFilesCount:
+        verified.repository.skippedFilesCount +
+        input.output.stats.skippedSyntaxErrorFilesCount +
+        input.output.stats.skippedOversizedFilesCount,
+      updatedAt: now,
+    };
+    const startedAt = verified.job.startedAt ?? now;
+    const updatedJob: IngestionJobRecord = {
+      ...verified.job,
+      stage: 'ready',
+      progressPct: 100,
+      startedAt,
+      finishedAt: now,
+      durationMs: Math.max(0, now.getTime() - startedAt.getTime()),
+    };
+    this.repos.set(ownership.repoId, updatedRepo);
+    this.jobs.set(ownership.jobId, updatedJob);
+    return Promise.resolve({
+      outcome: 'published',
+      applied: true,
+      repository: updatedRepo,
+      job: updatedJob,
+      persistedNodeCount: plan.nodeCount,
+      persistedEdgeCount: plan.edgeCount,
+      nodeBatches: plan.nodeBatches.length,
+      edgeBatches: plan.edgeBatches.length,
+    });
+  }
+
+  reconcilePublishedAttempt(
+    ownership: IngestionAttemptOwnership,
+  ): Promise<ReconcilePublishedAttemptResult> {
+    assertValidAttemptOwnership(ownership);
+    const repository = this.repos.get(ownership.repoId);
+    const job = this.jobs.get(ownership.jobId);
+    if (!repository || job?.repoId !== ownership.repoId) {
+      return Promise.resolve({ outcome: 'missing' });
+    }
+    if (repository.commitSha !== ownership.commitSha) {
+      return Promise.resolve({ outcome: 'identity_mismatch', reason: 'commit_sha_mismatch' });
+    }
+    if (job.bullmqJobId === null) {
+      return Promise.resolve({
+        outcome: 'identity_mismatch',
+        reason: 'missing_stored_bullmq_job_id',
+      });
+    }
+    if (job.bullmqJobId !== ownership.bullmqJobId) {
+      return Promise.resolve({
+        outcome: 'identity_mismatch',
+        reason: 'stored_bullmq_job_id_mismatch',
+      });
+    }
+    if (
+      isPersistedReadyRepository(repository) &&
+      job.stage === 'ready' &&
+      job.progressPct === 100 &&
+      job.attemptGeneration === ownership.attemptGeneration
+    ) {
+      return Promise.resolve({ outcome: 'published_by_owner', repository, job });
+    }
+    if (isTerminalRepo(repository.status)) {
+      return Promise.resolve({ outcome: 'terminal', status: repository.status });
+    }
+    if (isTerminalStage(job.stage)) {
+      return Promise.resolve({ outcome: 'terminal', status: job.stage });
+    }
+    if (job.attemptGeneration !== ownership.attemptGeneration) {
+      return Promise.resolve({
+        outcome: 'ownership_lost',
+        storedGeneration: job.attemptGeneration,
+        expectedGeneration: ownership.attemptGeneration,
+      });
+    }
+    return Promise.resolve({ outcome: 'still_owned_unpublished', repository, job });
   }
 
   failQueuedJobOnEnqueueError(

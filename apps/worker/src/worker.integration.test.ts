@@ -7,12 +7,15 @@ import {
   buildPoolConfig,
   createDbClient,
   createIngestionRepository,
+  edges,
+  nodes,
   runMigrations,
   sanitizeDatabaseTarget,
   type DbClient,
   type IngestionRepository,
 } from '@archon/db';
 import { createLogger, loadEnv, validateAnalysisGraph, type AnalysisOutput } from '@archon/shared';
+import { eq } from 'drizzle-orm';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { withExtractedRepo } from './extractor/github-tarball.js';
@@ -737,7 +740,7 @@ describe('BullMQ ingestion worker (PostgreSQL + Redis integration)', () => {
       fetchImpl: mockFetch,
       extractRepo,
       parserAdapter: adapter,
-      analysisResultHandoff: async (ctx: AnalysisResultHandoffContext) => {
+      beforeGraphPublish: async (ctx: AnalysisResultHandoffContext) => {
         workspaceExistsDuringHandoff.push(existsSync(latestWorkspaceDir));
         activeChildDuringHandoff.push(adapter.hasActiveChild());
         const midState = await repository.findJobWithRepository(ctx.jobId);
@@ -802,10 +805,23 @@ describe('BullMQ ingestion worker (PostgreSQL + Redis integration)', () => {
 
       const loaded1 = await repository.findJobWithRepository(created1.job.id);
       expect(loaded1?.repository.status).toBe('ready');
+      expect(loaded1?.repository.graphPersistedAt).not.toBeNull();
       expect(loaded1?.repository.fileCount).toBe(2);
       expect(loaded1?.repository.skippedFilesCount).toBe(1);
       expect(loaded1?.job.stage).toBe('ready');
       expect(loaded1?.job.progressPct).toBe(STAGE_PROGRESS.ready);
+      if (dbClient !== undefined) {
+        const persistedNodes1 = await dbClient.db
+          .select()
+          .from(nodes)
+          .where(eq(nodes.repoId, created1.repository.id));
+        const persistedEdges1 = await dbClient.db
+          .select()
+          .from(edges)
+          .where(eq(edges.repoId, created1.repository.id));
+        expect(persistedNodes1).toHaveLength(5);
+        expect(persistedEdges1).toHaveLength(2);
+      }
       expect(adapter.hasActiveChild()).toBe(false);
       expect(adapter.isFatal()).toBe(false);
       expect(adapter.getState()).toBe('IDLE');
@@ -849,10 +865,23 @@ describe('BullMQ ingestion worker (PostgreSQL + Redis integration)', () => {
 
       const loaded2 = await repository.findJobWithRepository(created2.job.id);
       expect(loaded2?.repository.status).toBe('ready');
+      expect(loaded2?.repository.graphPersistedAt).not.toBeNull();
       expect(loaded2?.repository.fileCount).toBe(2);
       expect(loaded2?.repository.skippedFilesCount).toBe(1);
       expect(loaded2?.job.stage).toBe('ready');
       expect(loaded2?.job.progressPct).toBe(STAGE_PROGRESS.ready);
+      if (dbClient !== undefined) {
+        const persistedNodes2 = await dbClient.db
+          .select()
+          .from(nodes)
+          .where(eq(nodes.repoId, created2.repository.id));
+        const persistedEdges2 = await dbClient.db
+          .select()
+          .from(edges)
+          .where(eq(edges.repoId, created2.repository.id));
+        expect(persistedNodes2).toHaveLength(5);
+        expect(persistedEdges2).toHaveLength(2);
+      }
 
       // Verify exact independently specified graph, metrics, and sequential reuse invariants
       expect(capturedResults).toHaveLength(2);
@@ -970,7 +999,7 @@ describe('BullMQ ingestion worker (PostgreSQL + Redis integration)', () => {
       fetchImpl: mockFetch,
       extractRepo,
       parserAdapter: adapter,
-      analysisResultHandoff: () => {
+      beforeGraphPublish: () => {
         handoffCalled = true;
         return Promise.resolve();
       },
@@ -1131,7 +1160,7 @@ describe('BullMQ ingestion worker (PostgreSQL + Redis integration)', () => {
       fetchImpl: mockFetch,
       extractRepo,
       parserAdapter: adapter,
-      analysisResultHandoff: (ctx) => {
+      beforeGraphPublish: (ctx) => {
         handoffAttempts += 1;
         capturedRequestIds.push(ctx.result.requestId);
         capturedGraphs.push(ctx.result.output);
@@ -1332,7 +1361,7 @@ describe('BullMQ ingestion worker (PostgreSQL + Redis integration)', () => {
       onInfrastructureFailure: (err) => {
         lifecycle.triggerInfrastructureFailure(err);
       },
-      analysisResultHandoff: async (ctx) => {
+      beforeGraphPublish: async (ctx) => {
         capturedHandoffSignal = ctx.signal;
         capturedResult = ctx.result;
         handoffEntered.resolve();

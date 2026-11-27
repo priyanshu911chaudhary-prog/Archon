@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { loadEnv } from '@archon/shared';
+import { loadEnv, type AnalysisOutput } from '@archon/shared';
 import { eq } from 'drizzle-orm';
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -13,6 +13,28 @@ import { DbError } from './errors.js';
 import { runMigrations } from './migrate.js';
 import { MAX_PG_INT32, createIngestionRepository, type IngestionRepository } from './repository.js';
 import { ingestionJobs, repositories } from './schema.js';
+
+const EMPTY_ANALYSIS_OUTPUT: AnalysisOutput = {
+  nodes: [],
+  edges: [],
+  warnings: [],
+  stats: {
+    discoveredFilesCount: 0,
+    parsedFilesCount: 0,
+    skippedSyntaxErrorFilesCount: 0,
+    skippedOversizedFilesCount: 0,
+    configFilesCount: 0,
+    folderNodeCount: 0,
+    fileNodeCount: 0,
+    functionNodeCount: 0,
+    classNodeCount: 0,
+    symbolNodeCount: 0,
+    importsEdgeCount: 0,
+    callsEdgeCount: 0,
+    totalBytesRead: 0,
+    truncatedWarningsCount: 0,
+  },
+};
 
 interface Deferred<T = void> {
   readonly promise: Promise<T>;
@@ -340,9 +362,13 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
     }
 
     // 6. Terminal repository & terminal job rejections
-    const finalized = await repoA.transitionJobStage(claimMax.ownership, {
-      toStatus: 'ready',
-      progressPct: 100,
+    await repoA.transitionJobStage(claimMax.ownership, {
+      toStatus: 'building_graph',
+      progressPct: 85,
+      now: t3,
+    });
+    const finalized = await repoA.publishRepositoryGraph(claimMax.ownership, {
+      output: EMPTY_ANALYSIS_OUTPUT,
       now: t4,
     });
     expect(finalized.applied).toBe(true);
@@ -492,9 +518,8 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
     });
 
     expect(
-      await repoA.transitionJobStage(own1, {
-        toStatus: 'ready',
-        progressPct: 100,
+      await repoA.publishRepositoryGraph(own1, {
+        output: EMPTY_ANALYSIS_OUTPUT,
         now: t4,
       }),
     ).toEqual({
@@ -532,17 +557,31 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
     const snapshotAfterRejected = await repoB.findJobWithRepository(created.job.id);
     expect(snapshotAfterRejected).toEqual(snapshotAfterGen2);
 
-    // Current owner (gen 2) finishes cleanly to ready
-    const ready = await repoB.transitionJobStage(own2, {
-      toStatus: 'ready',
-      progressPct: 100,
+    // Current owner (gen 2) transitions parsing with inventory, then atomically publishes to ready
+    const parsed2 = await repoB.transitionJobStage(own2, {
+      toStatus: 'parsing',
+      progressPct: 60,
       fileCount: 12,
       skippedFilesCount: 2,
+      now: t4,
+    });
+    expect(parsed2.applied).toBe(true);
+
+    const building2 = await repoB.transitionJobStage(own2, {
+      toStatus: 'building_graph',
+      progressPct: 85,
+      now: t4,
+    });
+    expect(building2.applied).toBe(true);
+
+    const ready = await repoB.publishRepositoryGraph(own2, {
+      output: EMPTY_ANALYSIS_OUTPUT,
       now: t5,
     });
     expect(ready.applied).toBe(true);
     if (ready.applied) {
       expect(ready.repository.status).toBe('ready');
+      expect(ready.repository.graphPersistedAt?.getTime()).toBe(t5.getTime());
       expect(ready.repository.fileCount).toBe(12);
       expect(ready.repository.skippedFilesCount).toBe(2);
       expect(ready.job.stage).toBe('ready');

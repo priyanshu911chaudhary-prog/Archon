@@ -169,10 +169,10 @@ describe('IngestionRepository (PostgreSQL integration)', () => {
       expect(failed.job.durationMs).toBe(7000);
     }
 
-    // Terminal row must NOT transition again
+    // Terminal row must NOT transition or publish again
     const lateTransition = await repo.transitionJobStage(ownership, {
-      toStatus: 'ready',
-      progressPct: 100,
+      toStatus: 'parsing',
+      progressPct: 60,
       now: t3,
     });
     expect(lateTransition.applied).toBe(false);
