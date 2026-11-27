@@ -676,3 +676,14 @@ The scorer evaluates persisted parser output rather than rerunning static analys
 Aggregate compatible independent runs only. Keep library-enabled and library-disabled configurations separate. Sequential retention sessions require separate interpretation.
 
 The external Linux container controllers, retention orchestrator and raw benchmark results remain outside the repository.
+
+## Graph Persistence Resource Benchmarks (Phase 5.6)
+
+The preceding Step 4.2 and Step 4.3 sections remain preserved as historical baselines. Phase 5 (`f47877d169e6e44623f176965700e7bcc790f31d`) updates the verified local baseline to **319 unit tests across 35 suites** and **37 Docker-backed integration tests across 7 suites** (**356 total passing tests across 42 suites**) and validates atomic PostgreSQL graph persistence under Linux cgroup v2 (`memory.max = 512 MiB`, `memory.swap.max = 0`).
+
+- **Persistence-only projection parity:** Because `computeGraphOutputDigest` includes `warnings`, `stats`, and serialization order (not stored as full JSON blobs in PostgreSQL), Phase 5.6 independently reconstructs persisted `nodes` and `edges` from PostgreSQL and compares a deterministic projection (`archon-persisted-graph-projection-v1`) against the Phase 4 Linux `graph-output-iter1.json` reference outputs (`run1-zustand-without-lib`, `run3-nextjs-subscription-payments-without-lib`, `run5-taxonomy-without-lib`):
+  - `pmndrs/zustand`: `e79e61e5e88e9ae5c274271eeeccf5f2a637f8518cc04332537d608d51cfd5e0` (170 nodes, 696 edges; 3/3 exact match)
+  - `vercel/nextjs-subscription-payments`: `cb9dec6ebe1415172bf4c1c1da15b0f5c5c2bd8b3c9afeb695e13c14763047a8` (187 nodes, 275 edges; 3/3 exact match)
+  - `shadcn-ui/taxonomy`: `b461abd2522cbe61c4548c4c865c603be38a4fdb996bef133ffd1d34379b593c` (500 nodes, 635 edges; 3/3 exact match)
+- **Synthetic 480-file stress workload (repeat determinism only):** `966f501af5d71cb0fbcf96acb333b39cf9e07bf483198d3e2c370cdec022a8bd` (2,897 nodes / 3,252 edges across 15/7 batches per run; 2/2 identical).
+- **External harness and evidence:** Scripts at `C:\dev\archon-eval\linux-bench-scripts\phase-5-6\`, accepted evidence at `C:\dev\archon-eval\results\phase-5-6-persistence-bench-rerun-20261127-231642\`. See [docs/phase-5-graph-persistence.md](../docs/phase-5-graph-persistence.md) for exact artifact SHA-256 hashes, cgroup measurements (`211.11 MiB` pre-shutdown peak, `+50.75 MiB` idle delta), and scope limitations.
