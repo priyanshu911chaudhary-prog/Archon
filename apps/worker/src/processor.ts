@@ -1,4 +1,9 @@
-import type { IngestionRepository } from '@archon/db';
+import {
+  DbError,
+  classifyDbError,
+  type IngestionAttemptOwnership,
+  type IngestionRepository,
+} from '@archon/db';
 import type { Logger } from '@archon/shared';
 import { UnrecoverableError } from 'bullmq';
 import { TarballExtractionError } from './extractor/errors.js';
@@ -60,6 +65,7 @@ export interface IngestionProcessorJob {
   readonly id?: string;
   readonly data: IngestionQueueJobData;
   readonly attemptsMade: number;
+  readonly attemptsStarted: number;
   readonly opts: {
     readonly attempts?: number;
   };
@@ -83,6 +89,11 @@ export interface ClassifiedIngestionError {
   readonly isParserError: boolean;
   readonly isCancellation: boolean;
   /**
+   * True when a database error has uncertain commit resolution; callers must NOT
+   * assume rollback and must NOT overwrite state with a terminal `failed` write.
+   */
+  readonly commitOutcomeUncertain: boolean;
+  /**
    * True for startup misconfiguration or fatal parser quarantine incidents.
    * Distinct from the lower-level runner's own `retryable: false` flag:
    * the affected worker shuts down and never reuses the runner, while a cleanly
@@ -95,7 +106,10 @@ export interface ClassifiedIngestionError {
 }
 
 export interface CreateIngestionProcessorDependencies {
-  readonly repository: Pick<IngestionRepository, 'transitionJobStage' | 'touchJobHeartbeat'>;
+  readonly repository: Pick<
+    IngestionRepository,
+    'claimIngestionAttempt' | 'transitionJobStage' | 'touchJobHeartbeat'
+  >;
   readonly logger: Pick<Logger, 'info' | 'warn' | 'error'>;
   readonly githubToken?: string;
   readonly maxSupportedFiles: number;
@@ -138,15 +152,13 @@ export function classifyIngestionError(err: unknown): ClassifiedIngestionError {
   if (err instanceof ParserIntegrationError) {
     const isInfrastructureFailure = err.fatal || err.startupFailure;
     return {
-      // Lower-level runner marks fatal/startupFailure non-retryable on that runner instance.
-      // At the worker integration layer, a cleanly settled attempt may be retried on a
-      // healthy replacement worker (bounded by BullMQ attempts) while this worker shuts down.
       retryable: isInfrastructureFailure ? true : err.retryable,
       errorCode: err.persistedCode,
       errorMessage: err.message,
       errorDetail: err.errorDetail,
       isParserError: true,
       isCancellation: err.disposition === 'cancelled',
+      commitOutcomeUncertain: false,
       isInfrastructureFailure,
       fatal: err.fatal,
       startupFailure: err.startupFailure,
@@ -161,6 +173,7 @@ export function classifyIngestionError(err: unknown): ClassifiedIngestionError {
       errorDetail: err.code,
       isParserError: false,
       isCancellation: true,
+      commitOutcomeUncertain: false,
       isInfrastructureFailure: false,
       fatal: false,
       startupFailure: false,
@@ -194,6 +207,27 @@ export function classifyIngestionError(err: unknown): ClassifiedIngestionError {
       errorDetail: err.code === 'TARBALL_CANCELLED' ? 'TARBALL_CANCELLED' : err.message,
       isParserError: false,
       isCancellation: err.code === 'TARBALL_CANCELLED',
+      commitOutcomeUncertain: false,
+      isInfrastructureFailure: false,
+      fatal: false,
+      startupFailure: false,
+    };
+  }
+
+  const dbClass = classifyDbError(err);
+  if (
+    err instanceof DbError ||
+    dbClass.category !== 'non_retryable' ||
+    dbClass.pgCode !== undefined
+  ) {
+    return {
+      retryable: dbClass.retryable,
+      errorCode: 'DATABASE_ERROR',
+      errorMessage: 'Database temporarily unavailable during repository ingestion.',
+      errorDetail: dbClass.category,
+      isParserError: false,
+      isCancellation: false,
+      commitOutcomeUncertain: dbClass.commitOutcomeUncertain,
       isInfrastructureFailure: false,
       fatal: false,
       startupFailure: false,
@@ -207,6 +241,7 @@ export function classifyIngestionError(err: unknown): ClassifiedIngestionError {
     errorDetail: 'WORKER_ERROR',
     isParserError: false,
     isCancellation: false,
+    commitOutcomeUncertain: false,
     isInfrastructureFailure: false,
     fatal: false,
     startupFailure: false,
@@ -233,10 +268,45 @@ export function createIngestionJobProcessor(
   const extractRepo = deps.extractRepo ?? withExtractedRepo;
   const analysisResultHandoff = deps.analysisResultHandoff ?? noopAnalysisResultHandoff;
   const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
-  const nowFn = deps.now ?? (() => new Date());
+  const explicitNow = (): Date | undefined => deps.now?.();
 
   return async function processIngestionJob(job: IngestionProcessorJob): Promise<void> {
+    // Capture delivery generation and immutable job identity synchronously before any await
     const payload = job.data;
+    const deliveryGeneration = job.attemptsStarted;
+    const runtimeBullmqJobId = job.id;
+
+    const jobAbortController = new AbortController();
+    const ownershipState: {
+      current: IngestionAttemptOwnership | null;
+      lostReason: 'ownership_lost' | 'terminal' | 'missing' | 'identity_mismatch' | null;
+    } = {
+      current: null,
+      lostReason: null,
+    };
+
+    const onShutdownAbort = (): void => {
+      if (!jobAbortController.signal.aborted) {
+        jobAbortController.abort();
+      }
+    };
+    if (deps.shutdownSignal !== undefined) {
+      if (isSignalAborted(deps.shutdownSignal)) {
+        jobAbortController.abort();
+      } else {
+        deps.shutdownSignal.addEventListener('abort', onShutdownAbort, { once: true });
+      }
+    }
+
+    const triggerPerJobOwnershipCancellation = (
+      reason: 'ownership_lost' | 'terminal' | 'missing' | 'identity_mismatch',
+    ): void => {
+      ownershipState.lostReason ??= reason;
+      if (!jobAbortController.signal.aborted) {
+        jobAbortController.abort();
+      }
+    };
+
     const progressState = { currentPct: 0 };
     const heartbeatState: {
       active: boolean;
@@ -276,23 +346,37 @@ export function createIngestionJobProcessor(
       }
     };
 
-    const runHeartbeatTick = (): void => {
+    const runHeartbeatTick = (ownership: IngestionAttemptOwnership): void => {
       if (!heartbeatState.active || heartbeatState.inFlightPromise !== null) {
         return;
       }
       const tickPromise = Promise.resolve().then(async (): Promise<void> => {
         try {
-          const result = await deps.repository.touchJobHeartbeat(payload.repoId, nowFn());
-          if (!result.updated) {
-            stopHeartbeatScheduling();
+          const result = await deps.repository.touchJobHeartbeat(ownership, explicitNow());
+          if (result.outcome === 'updated' || result.outcome === 'busy') {
+            return;
           }
+          stopHeartbeatScheduling();
+          triggerPerJobOwnershipCancellation(result.outcome);
+          safeLog(
+            'info',
+            {
+              repoId: ownership.repoId,
+              jobId: ownership.jobId,
+              attemptGeneration: ownership.attemptGeneration,
+              heartbeatOutcome: result.outcome,
+            },
+            'Heartbeat observed ownership loss or non-active repository; cancelling obsolete attempt',
+          );
         } catch (err) {
+          const dbClass = classifyDbError(err);
           safeLog(
             'warn',
             {
-              repoId: payload.repoId,
-              jobId: payload.jobId,
-              errorMessage: err instanceof Error ? err.message : 'Heartbeat update failed',
+              repoId: ownership.repoId,
+              jobId: ownership.jobId,
+              attemptGeneration: ownership.attemptGeneration,
+              dbCategory: dbClass.category,
             },
             'Failed to touch ingestion job heartbeat',
           );
@@ -303,12 +387,12 @@ export function createIngestionJobProcessor(
       heartbeatState.inFlightPromise = tickPromise;
     };
 
-    const startHeartbeat = (): void => {
+    const startHeartbeat = (ownership: IngestionAttemptOwnership): void => {
       if (heartbeatIntervalMs <= 0 || !heartbeatState.active) {
         return;
       }
       heartbeatState.timer = setInterval(() => {
-        runHeartbeatTick();
+        runHeartbeatTick(ownership);
       }, heartbeatIntervalMs);
       heartbeatState.timer.unref();
     };
@@ -324,11 +408,12 @@ export function createIngestionJobProcessor(
       if (isSignalAborted(deps.shutdownSignal)) {
         throw new IngestionCancelledError();
       }
+      if (ownershipState.lostReason !== null) {
+        throw new IngestionCancelledError();
+      }
     };
 
     const onFatalSignal = (): void => {
-      // Stop scheduling additional DB heartbeats synchronously during fatal pending quarantine
-      // without settling the pending parser promise or releasing workspace ownership.
       stopHeartbeatScheduling();
     };
     if (deps.fatalSignal !== undefined) {
@@ -339,24 +424,40 @@ export function createIngestionJobProcessor(
       }
     }
 
-    const markFailedSafe = async (classified: ClassifiedIngestionError): Promise<void> => {
+    const markFailedSafe = async (
+      ownership: IngestionAttemptOwnership,
+      classified: ClassifiedIngestionError,
+    ): Promise<void> => {
       try {
-        await deps.repository.transitionJobStage({
-          repoId: payload.repoId,
-          jobId: payload.jobId,
+        const res = await deps.repository.transitionJobStage(ownership, {
           toStatus: 'failed',
           progressPct: progressState.currentPct,
           errorCode: classified.errorCode,
           errorMessage: classified.errorMessage,
           errorDetail: classified.errorDetail,
-          now: nowFn(),
+          ...(deps.now !== undefined ? { now: deps.now() } : {}),
         });
+        if (!res.applied) {
+          safeLog(
+            'info',
+            {
+              repoId: ownership.repoId,
+              jobId: ownership.jobId,
+              attemptGeneration: ownership.attemptGeneration,
+              transitionOutcome: res.outcome,
+            },
+            'Skipped persisting failed status because attempt no longer owns repository',
+          );
+        }
       } catch (dbErr) {
-        deps.logger.error(
+        const dbClass = classifyDbError(dbErr);
+        safeLog(
+          'error',
           {
-            repoId: payload.repoId,
-            jobId: payload.jobId,
-            errorMessage: dbErr instanceof Error ? dbErr.message : 'Database update failed',
+            repoId: ownership.repoId,
+            jobId: ownership.jobId,
+            attemptGeneration: ownership.attemptGeneration,
+            dbCategory: dbClass.category,
           },
           'Failed to persist failed ingestion status in PostgreSQL',
         );
@@ -364,31 +465,60 @@ export function createIngestionJobProcessor(
     };
 
     try {
-      // 1. Check cancellation / fatal latch before starting new work
+      // 1. Check shutdown/fatal before claiming DB ownership
       assertNotCancelledOrFatal();
 
-      const cloningTransition = await deps.repository.transitionJobStage({
+      const claimResult = await deps.repository.claimIngestionAttempt({
         repoId: payload.repoId,
         jobId: payload.jobId,
-        toStatus: 'cloning',
+        bullmqJobId: runtimeBullmqJobId,
+        commitSha: payload.commitSha,
+        attemptGeneration: deliveryGeneration,
         progressPct: STAGE_PROGRESS.cloning,
-        ...(job.id !== undefined ? { bullmqJobId: job.id } : {}),
-        now: nowFn(),
+        ...(deps.now !== undefined ? { now: deps.now() } : {}),
       });
 
-      if (!cloningTransition.applied) {
-        deps.logger.info(
-          { repoId: payload.repoId, jobId: payload.jobId },
-          'Skipping ingestion job because repository is already in a terminal state',
+      if (claimResult.outcome !== 'claimed') {
+        if (
+          claimResult.outcome === 'stale_generation' ||
+          claimResult.outcome === 'already_terminal'
+        ) {
+          safeLog(
+            'info',
+            {
+              repoId: payload.repoId,
+              jobId: payload.jobId,
+              attemptGeneration: deliveryGeneration,
+              claimOutcome: claimResult.outcome,
+            },
+            'Skipping ingestion job because delivery claim was superseded or repository is terminal',
+          );
+          return;
+        }
+
+        safeLog(
+          'warn',
+          {
+            repoId: payload.repoId,
+            jobId: payload.jobId,
+            attemptGeneration: deliveryGeneration,
+            claimOutcome: claimResult.outcome,
+          },
+          'Rejecting ingestion job with invalid or missing ownership identity',
         );
-        return;
+        throw new NonRetryableIngestionError(
+          'Ingestion job rejected due to invalid or missing ownership identity.',
+        );
       }
+
+      const ownership = claimResult.ownership;
+      ownershipState.current = ownership;
       progressState.currentPct = STAGE_PROGRESS.cloning;
 
       // 2. Check cancellation before entering extraction
       assertNotCancelledOrFatal();
 
-      startHeartbeat();
+      startHeartbeat(ownership);
 
       await extractRepo(
         {
@@ -400,26 +530,31 @@ export function createIngestionJobProcessor(
           maxRepoSizeMb: deps.maxRepoSizeMb,
           tempBaseDir: deps.tempBaseDir,
           fetchImpl: deps.fetchImpl,
-          signal: deps.shutdownSignal,
+          signal: jobAbortController.signal,
         },
         async (workspace) => {
           // 3. Check cancellation before dispatching parsing transition
           assertNotCancelledOrFatal();
 
-          const parsingTransition = await deps.repository.transitionJobStage({
-            repoId: payload.repoId,
-            jobId: payload.jobId,
+          const parsingTransition = await deps.repository.transitionJobStage(ownership, {
             toStatus: 'parsing',
             progressPct: STAGE_PROGRESS.parsing,
             fileCount: workspace.stats.supportedFilesCount,
             skippedFilesCount: workspace.stats.skippedFilesCount,
-            now: nowFn(),
+            ...(deps.now !== undefined ? { now: deps.now() } : {}),
           });
 
           if (!parsingTransition.applied) {
-            deps.logger.info(
-              { repoId: payload.repoId, jobId: payload.jobId },
-              'Stopping ingestion before parsing because repository became terminal',
+            ownershipState.lostReason ??= parsingTransition.outcome;
+            safeLog(
+              'info',
+              {
+                repoId: ownership.repoId,
+                jobId: ownership.jobId,
+                attemptGeneration: ownership.attemptGeneration,
+                transitionOutcome: parsingTransition.outcome,
+              },
+              'Stopping ingestion before parsing because attempt no longer owns repository',
             );
             await stopAndDrainHeartbeat();
             return;
@@ -435,24 +570,29 @@ export function createIngestionJobProcessor(
               supportedFiles: workspace.supportedFiles,
               configFiles: workspace.configFiles,
             },
-            deps.shutdownSignal !== undefined ? { signal: deps.shutdownSignal } : undefined,
+            { signal: jobAbortController.signal },
           );
 
           // 5. Check cancellation after parsing completes and before dispatching building_graph
           assertNotCancelledOrFatal();
 
-          const graphTransition = await deps.repository.transitionJobStage({
-            repoId: payload.repoId,
-            jobId: payload.jobId,
+          const graphTransition = await deps.repository.transitionJobStage(ownership, {
             toStatus: 'building_graph',
             progressPct: STAGE_PROGRESS.buildingGraph,
-            now: nowFn(),
+            ...(deps.now !== undefined ? { now: deps.now() } : {}),
           });
 
           if (!graphTransition.applied) {
-            deps.logger.info(
-              { repoId: payload.repoId, jobId: payload.jobId },
-              'Stopping ingestion before building_graph handoff because repository became terminal',
+            ownershipState.lostReason ??= graphTransition.outcome;
+            safeLog(
+              'info',
+              {
+                repoId: ownership.repoId,
+                jobId: ownership.jobId,
+                attemptGeneration: ownership.attemptGeneration,
+                transitionOutcome: graphTransition.outcome,
+              },
+              'Stopping ingestion before building_graph handoff because attempt no longer owns repository',
             );
             await stopAndDrainHeartbeat();
             return;
@@ -463,35 +603,39 @@ export function createIngestionJobProcessor(
           assertNotCancelledOrFatal();
 
           await analysisResultHandoff({
-            repositoryId: payload.repoId,
-            jobId: payload.jobId,
-            commitSha: payload.commitSha,
+            repositoryId: ownership.repoId,
+            jobId: ownership.jobId,
+            commitSha: ownership.commitSha,
             result: analysisResult,
-            ...(deps.shutdownSignal !== undefined ? { signal: deps.shutdownSignal } : {}),
+            signal: jobAbortController.signal,
           });
 
-          // 7. Linearization point: check cancellation immediately before dispatching ready.
-          // Once the ready transition is dispatched/committed, cancellation cannot roll it back.
+          // 7. Cancellation cutoff immediately before dispatching transitional ready
           assertNotCancelledOrFatal();
 
-          const readyTransition = await deps.repository.transitionJobStage({
-            repoId: payload.repoId,
-            jobId: payload.jobId,
+          const readyTransition = await deps.repository.transitionJobStage(ownership, {
             toStatus: 'ready',
             progressPct: STAGE_PROGRESS.ready,
-            now: nowFn(),
+            ...(deps.now !== undefined ? { now: deps.now() } : {}),
           });
 
           if (readyTransition.applied) {
             progressState.currentPct = STAGE_PROGRESS.ready;
+          } else {
+            ownershipState.lostReason ??= readyTransition.outcome;
           }
           await stopAndDrainHeartbeat();
         },
       );
     } catch (err) {
-      // Stop scheduling new heartbeats and notify infrastructure supervision SYNCHRONOUSLY
-      // before awaiting potentially pending heartbeat I/O.
       stopHeartbeatScheduling();
+
+      // Already-classified non-retryable claim rejection (never mutates DB)
+      if (err instanceof NonRetryableIngestionError) {
+        await stopAndDrainHeartbeat();
+        throw err;
+      }
+
       const classified = classifyIngestionError(err);
 
       if (err instanceof ParserIntegrationError && classified.isInfrastructureFailure) {
@@ -504,11 +648,32 @@ export function createIngestionJobProcessor(
 
       await stopAndDrainHeartbeat();
 
+      // Per-job ownership-loss cancellation (not worker shutdown): exit cleanly without failing
+      // the repository or retrying the obsolete attempt.
+      if (
+        ownershipState.lostReason !== null &&
+        classified.isCancellation &&
+        !isSignalAborted(deps.shutdownSignal)
+      ) {
+        safeLog(
+          'info',
+          {
+            repoId: payload.repoId,
+            jobId: payload.jobId,
+            attemptGeneration: deliveryGeneration,
+            ownershipLossReason: ownershipState.lostReason,
+          },
+          'Obsolete ingestion attempt cancelled cleanly after losing ownership',
+        );
+        return;
+      }
+
       const safeLogContext =
         err instanceof ParserIntegrationError
           ? {
               repoId: payload.repoId,
               jobId: payload.jobId,
+              attemptGeneration: deliveryGeneration,
               errorCode: classified.errorCode,
               attemptsMade: job.attemptsMade,
               parserError: err.toSafeLogObject(),
@@ -516,30 +681,48 @@ export function createIngestionJobProcessor(
           : {
               repoId: payload.repoId,
               jobId: payload.jobId,
+              attemptGeneration: deliveryGeneration,
               errorCode: classified.errorCode,
+              errorDetail: classified.errorDetail,
               attemptsMade: job.attemptsMade,
+              commitOutcomeUncertain: classified.commitOutcomeUncertain,
             };
+
+      const activeOwnership = ownershipState.current;
 
       if (!classified.retryable) {
         safeLog(
           'warn',
           safeLogContext,
-          'Non-retryable ingestion failure; marking repository failed immediately',
+          'Non-retryable ingestion failure; marking repository failed when ownership is held',
         );
-        await markFailedSafe(classified);
+        if (activeOwnership !== null && !classified.commitOutcomeUncertain) {
+          await markFailedSafe(activeOwnership, classified);
+        }
         if (err instanceof ParserIntegrationError) {
           throw new NonRetryableIngestionError(classified.errorMessage);
         }
-        throw new NonRetryableIngestionError(classified.errorMessage, { cause: err });
+        if (err instanceof TarballExtractionError) {
+          throw new NonRetryableIngestionError(classified.errorMessage, { cause: err });
+        }
+        throw new NonRetryableIngestionError(classified.errorMessage);
       }
 
-      if (isFinalJobAttempt(job)) {
+      if (classified.commitOutcomeUncertain) {
+        safeLog(
+          'warn',
+          safeLogContext,
+          'Uncertain database commit outcome; preserving non-terminal state without unfenced failure write',
+        );
+      } else if (isFinalJobAttempt(job)) {
         safeLog(
           'error',
           safeLogContext,
-          'Retryable ingestion failure exhausted all attempts; marking repository failed',
+          'Retryable ingestion failure exhausted all attempts; marking repository failed when ownership is held',
         );
-        await markFailedSafe(classified);
+        if (activeOwnership !== null) {
+          await markFailedSafe(activeOwnership, classified);
+        }
       } else {
         safeLog(
           'warn',
@@ -560,6 +743,7 @@ export function createIngestionJobProcessor(
       // eslint-disable-next-line preserve-caught-error -- Deliberately discard untrusted raw cause at the BullMQ security boundary.
       throw new Error(classified.errorMessage);
     } finally {
+      deps.shutdownSignal?.removeEventListener('abort', onShutdownAbort);
       deps.fatalSignal?.removeEventListener('abort', onFatalSignal);
       await stopAndDrainHeartbeat();
     }

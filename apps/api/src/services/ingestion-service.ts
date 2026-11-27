@@ -1,5 +1,6 @@
 import {
   DEFAULT_STALE_JOB_THRESHOLD_MS,
+  classifyDbError,
   isEmptyJsTsRepository,
   type IngestionRepository,
   type RepositoryStatus,
@@ -90,17 +91,24 @@ function formatJobStatus(record: RepositoryWithJob): JobStatusOutput {
 
 export function createIngestionService(deps: IngestionServiceDependencies): IngestionService {
   const staleJobThresholdMs = deps.staleJobThresholdMs ?? DEFAULT_STALE_JOB_THRESHOLD_MS;
-  const nowFn = deps.now ?? (() => new Date());
+  const explicitNow = (): Date | undefined => deps.now?.();
 
   function triggerBestEffortExpiryCleanup(now: Date): void {
     void deps.repository.deleteExpiredRepositories(now).catch((err: unknown) => {
-      deps.logger.warn({ err }, 'Best-effort cleanup of expired repositories failed');
+      const dbClass = classifyDbError(err);
+      deps.logger.warn(
+        {
+          dbCategory: dbClass.category,
+          commitOutcomeUncertain: dbClass.commitOutcomeUncertain,
+        },
+        'Best-effort cleanup of expired repositories failed',
+      );
     });
   }
 
   async function ingestRepository(input: IngestRepositoryInput): Promise<IngestRepositoryOutput> {
     const parsedUrl = parseGitHubRepoUrl(input.githubUrl);
-    const now = nowFn();
+    const now = explicitNow() ?? new Date();
 
     const early: { match: RepositoryWithJob | null } = { match: null };
     const precheck = await deps.githubPrecheck.precheckRepository(parsedUrl, {
@@ -124,7 +132,10 @@ export function createIngestionService(deps: IngestionServiceDependencies): Inge
     const matched = early.match;
     if (!precheck.treeChecked && matched !== null) {
       if (matched.repository.status === 'ready' && !matched.repository.isSample) {
-        await deps.repository.bumpRepositoryExpiry(matched.repository.id, { now });
+        await deps.repository.bumpRepositoryExpiry(
+          matched.repository.id,
+          deps.now !== undefined ? { now } : {},
+        );
       }
 
       return {
@@ -151,46 +162,123 @@ export function createIngestionService(deps: IngestionServiceDependencies): Inge
       fileCount: supportedFileCount,
       isSample: input.isSample ?? false,
       initialStatus: isEmptyJsTs ? 'ready' : 'queued',
-      now,
+      ...(deps.now !== undefined ? { now } : {}),
     });
 
     if (result.created && result.repository.status === 'queued') {
+      let enqueued: { readonly bullmqJobId: string | null };
       try {
-        const enqueued = await deps.enqueuer.enqueue({
+        enqueued = await deps.enqueuer.enqueue({
           repoId: result.repository.id,
           jobId: result.job.id,
           owner: result.repository.owner,
           name: result.repository.name,
           commitSha: result.repository.commitSha,
         });
-
-        if (enqueued.bullmqJobId !== null) {
-          await deps.repository.attachBullMqJobId(result.job.id, enqueued.bullmqJobId);
-        }
-      } catch (err) {
+      } catch {
         deps.logger.error(
-          { err, repoId: result.repository.id, jobId: result.job.id },
+          {
+            repoId: result.repository.id,
+            jobId: result.job.id,
+            errorCode: 'QUEUE_ENQUEUE_FAILED',
+          },
           'Failed to enqueue ingestion job',
         );
-        await deps.repository.transitionJobStage({
-          repoId: result.repository.id,
-          jobId: result.job.id,
-          toStatus: 'failed',
-          progressPct: 0,
-          errorCode: 'QUEUE_ENQUEUE_FAILED',
-          errorMessage: 'Failed to enqueue ingestion job. Please try again.',
-          errorDetail: err instanceof Error ? err.message : 'Enqueue error',
-          now: nowFn(),
-        });
+        try {
+          const enqueueFailureOutcome = await deps.repository.failQueuedJobOnEnqueueError({
+            repoId: result.repository.id,
+            jobId: result.job.id,
+            errorCode: 'QUEUE_ENQUEUE_FAILED',
+            errorMessage: 'Failed to enqueue ingestion job. Please try again.',
+            errorDetail: 'QUEUE_ENQUEUE_FAILED',
+            ...(deps.now !== undefined ? { now: deps.now() } : {}),
+          });
+          if (!enqueueFailureOutcome.applied) {
+            deps.logger.warn(
+              {
+                repoId: result.repository.id,
+                jobId: result.job.id,
+                enqueueFailureOutcome: enqueueFailureOutcome.outcome,
+              },
+              'Skipped marking queued job failed after enqueue error',
+            );
+          }
+        } catch (dbErr) {
+          const dbClass = classifyDbError(dbErr);
+          deps.logger.error(
+            {
+              repoId: result.repository.id,
+              jobId: result.job.id,
+              dbCategory: dbClass.category,
+              commitOutcomeUncertain: dbClass.commitOutcomeUncertain,
+            },
+            'Failed to record enqueue failure in PostgreSQL',
+          );
+        }
         throw new AppApiError({
           code: 'QUEUE_UNAVAILABLE',
           statusCode: 503,
           message: 'Failed to enqueue ingestion job. Please try again.',
-          cause: err,
         });
       }
-    }
 
+      if (enqueued.bullmqJobId !== null) {
+        try {
+          const attached = await deps.repository.attachBullMqJobId(
+            result.job.id,
+            enqueued.bullmqJobId,
+          );
+          switch (attached.outcome) {
+            case 'attached':
+            case 'already_attached':
+              break;
+            case 'identity_mismatch':
+              deps.logger.error(
+                {
+                  repoId: result.repository.id,
+                  jobId: result.job.id,
+                  attachOutcome: attached.outcome,
+                  reason: attached.reason,
+                },
+                'BullMQ job ID attachment rejected due to identity mismatch',
+              );
+              break;
+            case 'terminal':
+              deps.logger.warn(
+                {
+                  repoId: result.repository.id,
+                  jobId: result.job.id,
+                  attachOutcome: attached.outcome,
+                  status: attached.status,
+                },
+                'Skipped BullMQ job ID attachment because repository is already terminal',
+              );
+              break;
+            case 'missing':
+              deps.logger.warn(
+                {
+                  repoId: result.repository.id,
+                  jobId: result.job.id,
+                  attachOutcome: attached.outcome,
+                },
+                'Skipped BullMQ job ID attachment because ingestion job row was missing',
+              );
+              break;
+          }
+        } catch (dbErr) {
+          const dbClass = classifyDbError(dbErr);
+          deps.logger.warn(
+            {
+              repoId: result.repository.id,
+              jobId: result.job.id,
+              dbCategory: dbClass.category,
+              commitOutcomeUncertain: dbClass.commitOutcomeUncertain,
+            },
+            'Failed to persist BullMQ job ID after successful enqueue; worker will backfill on claim',
+          );
+        }
+      }
+    }
     const reused = !result.created;
     const httpStatus: 200 | 202 = reused && result.repository.status === 'ready' ? 200 : 202;
 
@@ -216,11 +304,10 @@ export function createIngestionService(deps: IngestionServiceDependencies): Inge
     }
 
     if (!isTerminalStatus(record.repository.status)) {
-      const now = nowFn();
       const swept = await deps.repository.sweepStaleJobs({
         repoId: record.repository.id,
         staleThresholdMs: staleJobThresholdMs,
-        now,
+        ...(deps.now !== undefined ? { now: deps.now() } : {}),
       });
       if (swept.count > 0) {
         const refreshed = await deps.repository.findJobWithRepository(jobId);

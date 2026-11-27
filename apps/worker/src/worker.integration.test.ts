@@ -19,6 +19,8 @@ import { withExtractedRepo } from './extractor/github-tarball.js';
 import { buildGzippedUstar, type UstarFixtureEntry } from './extractor/tar-test-utils.js';
 import { createWorkerServiceLifecycle } from './lifecycle.js';
 import {
+  ParserIntegrationError,
+  classifyParserRunnerError,
   createProductionParserAdapter,
   type AnalysisResultHandoffContext,
   type ProductionParserLogEvent,
@@ -45,6 +47,7 @@ import {
   sanitizeRedisTarget,
   waitForRedisReady,
 } from './redis.js';
+import { ParserRunnerError } from './parser-runner.js';
 
 type FetchInput = Parameters<typeof globalThis.fetch>[0];
 
@@ -1415,7 +1418,8 @@ describe('BullMQ ingestion worker (PostgreSQL + Redis integration)', () => {
       expect(adapter.hasActiveChild()).toBe(false);
       expect(adapter.getState()).toBe('IDLE');
       expect(existsSync(capturedWorkspaceDir)).toBe(true);
-      expect(capturedHandoffSignal).toBe(lifecycle.shutdownSignal);
+      expect(capturedHandoffSignal).toBeDefined();
+      expect(capturedHandoffSignal).not.toBe(lifecycle.shutdownSignal);
       expect(capturedHandoffSignal?.aborted).toBe(false);
 
       const midLoaded = await repository.findJobWithRepository(created.job.id);
@@ -1489,6 +1493,252 @@ describe('BullMQ ingestion worker (PostgreSQL + Redis integration)', () => {
         prefix: queuePrefix,
       });
       await obliterateAndCloseQueue(cleanupQueue);
+      await rm(caseTempDir, { recursive: true, force: true });
+      outstandingCaseOwnership.delete(caseQueueName);
+    }
+  });
+
+  // === BATCH 5.3B: REAL OWNERSHIP FENCING INTEGRATION TESTS ===
+
+  it('skips extraction and parser when an obsolete delivery arrives after a newer generation claimed DB ownership, and blocks enqueue-failure overwrite', async () => {
+    const caseQueueName = `${queueName}-obsolete-claim`;
+    outstandingCaseOwnership.add(caseQueueName);
+    const caseTempDir = await mkdtemp(path.join(tempBaseDir, 'obsolete-claim-'));
+    const caseQueue = createIngestionQueue({
+      redisUrl,
+      queueName: caseQueueName,
+      prefix: queuePrefix,
+      backoffDelayMs: 50,
+    });
+
+    const owner = 'archon-own-a';
+    const name = 'obsolete-claim-repo';
+    const sha = '6666666666666666666666666666666666666666';
+
+    const created = await repository.createOrGetActive({
+      githubUrl: `https://github.com/${owner}/${name}`,
+      owner,
+      name,
+      defaultBranch: 'main',
+      commitSha: sha,
+      sizeKb: 10,
+    });
+
+    // Newer generation 2 claims DB ownership before BullMQ delivers generation 1
+    const claimedGen2 = await repository.claimIngestionAttempt({
+      repoId: created.repository.id,
+      jobId: created.job.id,
+      bullmqJobId: created.job.id,
+      commitSha: sha,
+      attemptGeneration: 2,
+    });
+    expect(claimedGen2.outcome).toBe('claimed');
+
+    // API enqueue failure must NOT overwrite an already-claimed attempt
+    const lateEnqueueFail = await repository.failQueuedJobOnEnqueueError({
+      repoId: created.repository.id,
+      jobId: created.job.id,
+    });
+    expect(lateEnqueueFail.outcome).toBe('already_claimed');
+    expect(lateEnqueueFail.applied).toBe(false);
+
+    let extractCalled = false;
+    let parseCalled = false;
+    const processor = createIngestionJobProcessor({
+      repository,
+      logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      tempBaseDir: caseTempDir,
+      extractRepo: async (_opts, callback) => {
+        extractCalled = true;
+        return callback({
+          rootDir: caseTempDir,
+          topLevelPrefix: 'x',
+          supportedFiles: [],
+          configFiles: [],
+          stats: {
+            compressedBytes: 0,
+            decompressedBytes: 0,
+            writtenBytes: 0,
+            supportedFilesCount: 0,
+            configFilesCount: 0,
+            skippedFilesCount: 0,
+            oversizedSkippedFilesCount: 0,
+          },
+        });
+      },
+      parserAdapter: makeFakeIntegrationParserAdapter(() => {
+        parseCalled = true;
+      }),
+    });
+
+    const worker = createIngestionWorker({
+      redisUrl,
+      queueName: caseQueueName,
+      prefix: queuePrefix,
+      drainDelay: 1,
+      processor,
+      logger,
+    });
+
+    try {
+      const done = createDeferred<string>();
+      worker.once('completed', (job) => {
+        done.resolve(job.id ?? '');
+      });
+      worker.once('failed', (_job, err) => {
+        done.reject(err);
+      });
+
+      await enqueueIngestionJob(caseQueue, {
+        repoId: created.repository.id,
+        jobId: created.job.id,
+        owner,
+        name,
+        commitSha: sha,
+      });
+
+      await withTimeout(done.promise, 15_000, 'obsolete claim completion');
+      expect(extractCalled).toBe(false);
+      expect(parseCalled).toBe(false);
+
+      const loaded = await repository.findJobWithRepository(created.job.id);
+      expect(loaded?.repository.status).toBe('cloning');
+      expect(loaded?.job.attemptGeneration).toBe(2);
+    } finally {
+      const closed = await confirmWorkerClosed(worker, 10_000);
+      expect(closed).toBe(true);
+      await obliterateAndCloseQueue(caseQueue);
+      await rm(caseTempDir, { recursive: true, force: true });
+      outstandingCaseOwnership.delete(caseQueueName);
+    }
+  });
+
+  it('cancels an in-flight obsolete attempt cleanly via heartbeat ownership_lost without failing DB or stopping worker', async () => {
+    const caseQueueName = `${queueName}-hb-loss`;
+    outstandingCaseOwnership.add(caseQueueName);
+    const caseTempDir = await mkdtemp(path.join(tempBaseDir, 'hb-loss-'));
+    const caseQueue = createIngestionQueue({
+      redisUrl,
+      queueName: caseQueueName,
+      prefix: queuePrefix,
+      backoffDelayMs: 50,
+    });
+
+    const owner = 'archon-own-b';
+    const name = 'hb-loss-repo';
+    const sha = '7777777777777777777777777777777777777777';
+    const prefix = 'archon-own-b-hb-loss-repo-7777777';
+
+    const created = await repository.createOrGetActive({
+      githubUrl: `https://github.com/${owner}/${name}`,
+      owner,
+      name,
+      defaultBranch: 'main',
+      commitSha: sha,
+      sizeKb: 10,
+    });
+
+    const mockFetch = createTarballMockFetch(owner, name, sha, makeStandardFixtureEntries(prefix));
+    const enteredParse = createDeferred();
+    const forceAbortParse = createDeferred();
+    let abortedByHeartbeat = false;
+
+    const makeTypedCancelErr = (): ParserIntegrationError =>
+      new ParserIntegrationError(
+        classifyParserRunnerError(
+          new ParserRunnerError({
+            code: 'PARSER_CANCELLED',
+            message: 'Parser execution was cancelled.',
+            retryable: true,
+          }),
+        ),
+      );
+
+    const processor = createIngestionJobProcessor({
+      repository,
+      logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 25,
+      tempBaseDir: caseTempDir,
+      fetchImpl: mockFetch,
+      parserAdapter: {
+        parseWorkspace: (_ws, opts) =>
+          new Promise((_resolve, reject) => {
+            enteredParse.resolve();
+            if (opts?.signal?.aborted === true) {
+              abortedByHeartbeat = true;
+              reject(makeTypedCancelErr());
+              return;
+            }
+            const onAbort = (): void => {
+              abortedByHeartbeat = true;
+              reject(makeTypedCancelErr());
+            };
+            opts?.signal?.addEventListener('abort', onAbort, { once: true });
+            void forceAbortParse.promise.then(() => {
+              opts?.signal?.removeEventListener('abort', onAbort);
+              reject(makeTypedCancelErr());
+            });
+          }),
+        isFatal: () => false,
+        getState: () => 'IDLE',
+      },
+    });
+
+    const worker = createIngestionWorker({
+      redisUrl,
+      queueName: caseQueueName,
+      prefix: queuePrefix,
+      drainDelay: 1,
+      processor,
+      logger,
+    });
+
+    try {
+      const done = createDeferred<string>();
+      worker.once('completed', (job) => {
+        done.resolve(job.id ?? '');
+      });
+      worker.once('failed', (_job, err) => {
+        done.reject(err);
+      });
+
+      await enqueueIngestionJob(caseQueue, {
+        repoId: created.repository.id,
+        jobId: created.job.id,
+        owner,
+        name,
+        commitSha: sha,
+      });
+
+      await withTimeout(enteredParse.promise, 15_000, 'gen-1 entered parse');
+
+      // Generation 2 supersedes generation 1 in PostgreSQL while gen-1 is in-flight
+      const superseded = await repository.claimIngestionAttempt({
+        repoId: created.repository.id,
+        jobId: created.job.id,
+        bullmqJobId: created.job.id,
+        commitSha: sha,
+        attemptGeneration: 2,
+      });
+      expect(superseded.outcome).toBe('claimed');
+
+      await withTimeout(done.promise, 15_000, 'gen-1 clean cancellation');
+      expect(abortedByHeartbeat).toBe(true);
+
+      const loaded = await repository.findJobWithRepository(created.job.id);
+      expect(loaded?.repository.status).toBe('cloning');
+      expect(loaded?.job.attemptGeneration).toBe(2);
+      expect(await readdir(caseTempDir)).toEqual([]);
+    } finally {
+      forceAbortParse.resolve();
+      const closed = await confirmWorkerClosed(worker, 10_000);
+      expect(closed).toBe(true);
+      await obliterateAndCloseQueue(caseQueue);
       await rm(caseTempDir, { recursive: true, force: true });
       outstandingCaseOwnership.delete(caseQueueName);
     }
