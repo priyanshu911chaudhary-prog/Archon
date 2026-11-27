@@ -24,10 +24,17 @@ import {
   type NodeEdgeEvidenceItem,
   type NodeEdgesResponse,
   type NodeType,
+  type BlastRadiusResponse,
   type RepositoryGraphViewResponse,
   type RepositoryHubsResponse,
 } from '@archon/shared';
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import {
+  executeBlastRadiusQuery,
+  validateBlastRadiusLimits,
+  type BlastRadiusLimits,
+  type GetBlastRadiusInput,
+} from './blast-radius.js';
 import type { ArchonDatabase } from './client.js';
 import {
   DEFAULT_GRAPH_READ_TX_TIMEOUT_CONFIG,
@@ -97,6 +104,7 @@ export interface GetRepositoryHubsInput {
 
 export interface GraphQueryRepositoryOptions {
   readonly limits?: Partial<GraphQueryLimits>;
+  readonly blastRadiusLimits?: Partial<BlastRadiusLimits>;
   readonly timeouts?: TransactionTimeoutConfig;
 }
 
@@ -105,6 +113,7 @@ export interface GraphQueryRepository {
   getNodeDetail(input: GetNodeDetailInput): Promise<NodeDetailResponse>;
   getNodeEdges(input: GetNodeEdgesInput): Promise<NodeEdgesResponse>;
   getRepositoryHubs(input: GetRepositoryHubsInput): Promise<RepositoryHubsResponse>;
+  getBlastRadius(input: GetBlastRadiusInput): Promise<BlastRadiusResponse>;
 }
 
 interface MutableAggEdge {
@@ -218,6 +227,7 @@ export function createGraphQueryRepository(
   options: GraphQueryRepositoryOptions = {},
 ): GraphQueryRepository {
   const limits = validateGraphQueryLimits(options.limits);
+  const blastRadiusLimits = validateBlastRadiusLimits(options.blastRadiusLimits);
   const timeouts = options.timeouts ?? DEFAULT_GRAPH_READ_TX_TIMEOUT_CONFIG;
 
   async function getRepositoryGraph(
@@ -1277,10 +1287,15 @@ export function createGraphQueryRepository(
     return result;
   }
 
+  async function getBlastRadius(input: GetBlastRadiusInput): Promise<BlastRadiusResponse> {
+    return executeBlastRadiusQuery(db, input, blastRadiusLimits, timeouts);
+  }
+
   return {
     getRepositoryGraph,
     getNodeDetail,
     getNodeEdges,
     getRepositoryHubs,
+    getBlastRadius,
   };
 }

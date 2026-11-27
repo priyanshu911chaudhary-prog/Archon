@@ -168,3 +168,11 @@ export {
   type GraphQueryRepository,
   type GraphQueryRepositoryOptions,
 } from './graph-query-repository.js';
+
+export {
+  DEFAULT_BLAST_RADIUS_LIMITS,
+  HARD_MAX_BLAST_RADIUS_LIMITS,
+  validateBlastRadiusLimits,
+  type BlastRadiusLimits,
+  type GetBlastRadiusInput,
+} from './blast-radius.js';

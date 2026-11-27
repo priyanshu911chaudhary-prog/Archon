@@ -37,3 +37,4 @@ export { isRepoConfigPath, isSupportedSourcePath, normalizePosixPath } from './r
 export * from './analysis-contracts.js';
 export * from './parser-ipc.js';
 export * from './graph-query-contracts.js';
+export * from './blast-radius-contracts.js';

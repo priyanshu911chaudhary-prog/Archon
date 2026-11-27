@@ -76,6 +76,7 @@ export type GraphQueryErrorCode =
   | 'INVALID_SCOPE_NODE'
   | 'GRAPH_SCOPE_REQUIRED'
   | 'GRAPH_BUDGET_EXCEEDED'
+  | 'BLAST_RADIUS_BUDGET_EXCEEDED'
   | 'GRAPH_RESPONSE_TOO_LARGE'
   | 'GRAPH_CONTAINMENT_INVALID';
 
@@ -108,6 +109,12 @@ export interface NodeMetadataRow {
   readonly isExported: boolean;
   readonly startLine: number | null;
   readonly endLine: number | null;
+}
+
+export interface QualifyingEdgeBudgetTracker {
+  readonly remaining: () => number;
+  readonly consume: (observedRows: number, stage: string) => void;
+  readonly onExceeded: (stage: string) => never;
 }
 
 export interface NodeIncomingDegreeStats {
@@ -412,8 +419,12 @@ export async function assertBoundedIncomingEdgesForTargets(
   targetNodeIds: readonly string[],
   maxScannedRawEdges: number,
   errorCode: 'GRAPH_SCOPE_REQUIRED' | 'GRAPH_BUDGET_EXCEEDED' = 'GRAPH_BUDGET_EXCEEDED',
-): Promise<void> {
-  if (targetNodeIds.length === 0) return;
+  budgetTracker?: QualifyingEdgeBudgetTracker,
+  stage = 'degree_incoming',
+): Promise<number> {
+  if (targetNodeIds.length === 0) return 0;
+  const cap =
+    budgetTracker !== undefined ? Math.max(0, budgetTracker.remaining()) : maxScannedRawEdges;
   const sub = tx
     .select({ one: sql<number>`1` })
     .from(edges)
@@ -424,16 +435,22 @@ export async function assertBoundedIncomingEdgesForTargets(
         ne(edges.sourceNodeId, edges.targetNodeId),
       ),
     )
-    .limit(maxScannedRawEdges + 1)
+    .limit(cap + 1)
     .as('bounded_in_edges');
   const rows = await tx.select({ cnt: sql<number>`COUNT(*)::int` }).from(sub);
-  if ((rows[0]?.cnt ?? 0) > maxScannedRawEdges) {
+  const cnt = rows[0]?.cnt ?? 0;
+  if (cnt > cap) {
+    if (budgetTracker !== undefined) {
+      budgetTracker.onExceeded(stage);
+    }
     throw new GraphQueryError(
       errorCode,
       'Incoming edge count exceeds qualifying-row budget before degree aggregation.',
-      { maxScannedRawEdges },
+      { maxScannedRawEdges: cap },
     );
   }
+  budgetTracker?.consume(cnt, stage);
+  return cnt;
 }
 
 /**
@@ -621,19 +638,25 @@ export async function loadNodeIncomingDegrees(
   targetNodeIds: readonly string[],
   limits: GraphQueryLimits,
   budgetErrorCode: 'GRAPH_SCOPE_REQUIRED' | 'GRAPH_BUDGET_EXCEEDED' = 'GRAPH_BUDGET_EXCEEDED',
+  budgetTracker?: QualifyingEdgeBudgetTracker,
 ): Promise<ReadonlyMap<string, NodeIncomingDegreeStats>> {
   const result = new Map<string, NodeIncomingDegreeStats>();
   if (targetNodeIds.length === 0) {
     return result;
   }
 
-  await assertBoundedIncomingEdgesForTargets(
+  const qualifyingRows = await assertBoundedIncomingEdgesForTargets(
     tx,
     repoId,
     targetNodeIds,
     limits.maxScannedRawEdges,
     budgetErrorCode,
+    budgetTracker,
+    'degree_incoming',
   );
+  if (qualifyingRows === 0) {
+    return result;
+  }
 
   const rows = await tx
     .select({
@@ -675,6 +698,7 @@ export async function loadDependentFileCounts(
   targetFilePaths: readonly string[],
   limits: GraphQueryLimits,
   budgetErrorCode: 'GRAPH_SCOPE_REQUIRED' | 'GRAPH_BUDGET_EXCEEDED' = 'GRAPH_BUDGET_EXCEEDED',
+  budgetTracker?: QualifyingEdgeBudgetTracker,
 ): Promise<ReadonlyMap<string, number>> {
   const result = new Map<string, number>();
   if (targetFilePaths.length === 0) {
@@ -710,18 +734,52 @@ export async function loadDependentFileCounts(
   }
 
   const rollupTargetIds = rollupTargetNodes.map((n) => n.id);
-  await assertBoundedIncomingEdgesForTargets(
-    tx,
-    repoId,
-    rollupTargetIds,
-    limits.maxScannedRawEdges,
-    budgetErrorCode,
-  );
-
   const idListSql = sql.join(
     rollupTargetIds.map((id) => sql`${id}::uuid`),
     sql`, `,
   );
+
+  const cap =
+    budgetTracker !== undefined
+      ? Math.max(0, budgetTracker.remaining())
+      : limits.maxScannedRawEdges;
+  const rollupProbe = await tx.execute(sql`
+    SELECT COUNT(*)::int AS cnt
+    FROM (
+      SELECT 1
+      FROM edges e
+      INNER JOIN nodes src ON src.repo_id = e.repo_id AND src.id = e.source_node_id
+      INNER JOIN nodes tgt ON tgt.repo_id = e.repo_id AND tgt.id = e.target_node_id
+      WHERE e.repo_id = ${repoId}
+        AND e.target_node_id IN (${idListSql})
+        AND e.source_node_id <> e.target_node_id
+        AND src.file_path <> tgt.file_path
+        AND (
+          (e.edge_type = 'IMPORTS' AND tgt.node_type = 'file')
+          OR (
+            e.edge_type = 'CALLS'
+            AND tgt.node_type IN ('function', 'class', 'symbol')
+            AND tgt.is_exported = true
+          )
+        )
+      LIMIT ${cap + 1}
+    ) AS bounded_rollup_edges
+  `);
+  const rollupEdgeCnt = readIntColumn(rollupProbe.rows[0], 'cnt');
+  if (rollupEdgeCnt > cap) {
+    if (budgetTracker !== undefined) {
+      budgetTracker.onExceeded('degree_file_rollup');
+    }
+    throw new GraphQueryError(
+      budgetErrorCode,
+      'File-rollup incoming edge count exceeds qualifying-row budget before aggregation.',
+      { maxScannedRawEdges: cap },
+    );
+  }
+  budgetTracker?.consume(rollupEdgeCnt, 'degree_file_rollup');
+  if (rollupEdgeCnt === 0) {
+    return result;
+  }
 
   const execRes = await tx.execute(sql`
     SELECT tgt.file_path AS target_file_path, COUNT(DISTINCT src.file_path)::int AS dep_count
