@@ -4,10 +4,13 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  DbError,
+  PG_TRANSACTION_RESOLUTION_UNKNOWN_CODE,
   buildPoolConfig,
   createDbClient,
   createIngestionRepository,
   edges,
+  isEmptyJsTsRepository,
   nodes,
   runMigrations,
   sanitizeDatabaseTarget,
@@ -16,7 +19,7 @@ import {
 } from '@archon/db';
 import { createLogger, loadEnv, validateAnalysisGraph, type AnalysisOutput } from '@archon/shared';
 import { eq } from 'drizzle-orm';
-import { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { withExtractedRepo } from './extractor/github-tarball.js';
 import { buildGzippedUstar, type UstarFixtureEntry } from './extractor/tar-test-utils.js';
@@ -320,33 +323,46 @@ async function obliterateAndCloseQueue(queueToClean: IngestionQueue): Promise<vo
 function makeFakeIntegrationParserAdapter(
   onParse?: (supportedFiles: readonly string[]) => void,
 ): IngestionParserAdapter {
-  const emptyOutput: AnalysisOutput = {
-    nodes: [],
-    edges: [],
-    warnings: [],
-    stats: {
-      discoveredFilesCount: 0,
-      parsedFilesCount: 0,
-      skippedSyntaxErrorFilesCount: 0,
-      skippedOversizedFilesCount: 0,
-      configFilesCount: 0,
-      folderNodeCount: 0,
-      fileNodeCount: 0,
-      functionNodeCount: 0,
-      classNodeCount: 0,
-      symbolNodeCount: 0,
-      importsEdgeCount: 0,
-      callsEdgeCount: 0,
-      totalBytesRead: 0,
-      truncatedWarningsCount: 0,
-    },
-  };
+  const fakeHash = 'a'.repeat(64);
   return {
     parseWorkspace: (workspace) => {
       onParse?.(workspace.supportedFiles);
+      const fileNodes = workspace.supportedFiles.map((filePath) => ({
+        nodeType: 'file' as const,
+        name: filePath.split('/').at(-1) ?? filePath,
+        qualifiedName: `file:${filePath}`,
+        filePath,
+        parentQualifiedName: null,
+        isExported: false,
+        startLine: 1,
+        endLine: 1,
+        contentHash: fakeHash,
+        snippet: 'export {};',
+      }));
+      const output: AnalysisOutput = {
+        nodes: fileNodes,
+        edges: [],
+        warnings: [],
+        stats: {
+          discoveredFilesCount: fileNodes.length,
+          parsedFilesCount: fileNodes.length,
+          skippedSyntaxErrorFilesCount: 0,
+          skippedOversizedFilesCount: 0,
+          configFilesCount: workspace.configFiles.length,
+          folderNodeCount: 0,
+          fileNodeCount: fileNodes.length,
+          functionNodeCount: 0,
+          classNodeCount: 0,
+          symbolNodeCount: 0,
+          importsEdgeCount: 0,
+          callsEdgeCount: 0,
+          totalBytesRead: fileNodes.length * 10,
+          truncatedWarningsCount: 0,
+        },
+      };
       return Promise.resolve({
         requestId: '11111111-2222-4333-8444-555555555555',
-        output: emptyOutput,
+        output,
         metrics: {
           endToEndDurationMs: 1,
           childAnalysisDurationMs: 1,
@@ -1595,6 +1611,7 @@ describe('BullMQ ingestion worker (PostgreSQL + Redis integration)', () => {
             configFilesCount: 0,
             skippedFilesCount: 0,
             oversizedSkippedFilesCount: 0,
+            oversizedSupportedFilesCount: 0,
           },
         });
       },
@@ -1765,6 +1782,685 @@ describe('BullMQ ingestion worker (PostgreSQL + Redis integration)', () => {
       expect(await readdir(caseTempDir)).toEqual([]);
     } finally {
       forceAbortParse.resolve();
+      const closed = await confirmWorkerClosed(worker, 10_000);
+      expect(closed).toBe(true);
+      await obliterateAndCloseQueue(caseQueue);
+      await rm(caseTempDir, { recursive: true, force: true });
+      outstandingCaseOwnership.delete(caseQueueName);
+    }
+  });
+
+  // === PHASE 5.5: END-TO-END PERSISTENCE, ROLLBACK, RECONCILIATION & COUNT INVARIANT TESTS ===
+
+  it('distinguishes an all-syntax-skipped repo from verified-empty and preserves exact counts without double counting across a retry', async () => {
+    const caseQueueName = `${queueName}-all-skipped-retry`;
+    outstandingCaseOwnership.add(caseQueueName);
+    const caseTempDir = await mkdtemp(path.join(tempBaseDir, 'all-skipped-retry-'));
+    const caseQueue = createIngestionQueue({
+      redisUrl,
+      queueName: caseQueueName,
+      prefix: queuePrefix,
+      attempts: 2,
+      backoffDelayMs: 50,
+    });
+
+    const owner = 'archon-p55-a';
+    const name = 'syntax-only-repo';
+    const sha = '8888888888888888888888888888888888888888';
+    const prefix = 'archon-p55-a-syntax-only-repo-8888888';
+
+    const mockFetch = createTarballMockFetch(owner, name, sha, [
+      { path: `${prefix}/`, typeFlag: '5' },
+      { path: `${prefix}/src/`, typeFlag: '5' },
+      { path: `${prefix}/src/broken.ts`, content: 'export const = {{{ invalid syntax;\n' },
+      { path: `${prefix}/README.md`, content: '# broken ts repo\n' },
+    ]);
+
+    const adapter = createProductionParserAdapter({
+      limits: { maxSupportedFiles: 500, maxTotalBytes: 50 * 1024 * 1024 },
+    });
+
+    // Fail attempt 1 before publication so attempt 2 proves zero count double-counting across retries
+    let publishGateCalls = 0;
+    const processor = createIngestionJobProcessor({
+      repository,
+      logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      tempBaseDir: caseTempDir,
+      fetchImpl: mockFetch,
+      parserAdapter: adapter,
+      beforeGraphPublish: () => {
+        publishGateCalls += 1;
+        if (publishGateCalls === 1) {
+          return Promise.reject(new Error('transient attempt 1 pre-publish error'));
+        }
+        return Promise.resolve();
+      },
+    });
+
+    const worker = createIngestionWorker({
+      redisUrl,
+      queueName: caseQueueName,
+      prefix: queuePrefix,
+      drainDelay: 1,
+      processor,
+      logger,
+    });
+
+    try {
+      const created = await repository.createOrGetActive({
+        githubUrl: `https://github.com/${owner}/${name}`,
+        owner,
+        name,
+        defaultBranch: 'main',
+        commitSha: sha,
+        sizeKb: 10,
+      });
+
+      const done = createDeferred<string>();
+      worker.on('completed', (job) => {
+        if (job.id === created.job.id) {
+          done.resolve(job.id);
+        }
+      });
+      worker.on('failed', (job, err) => {
+        if (job?.id === created.job.id && job.attemptsMade >= 2) {
+          done.reject(err);
+        }
+      });
+
+      await enqueueIngestionJob(caseQueue, {
+        repoId: created.repository.id,
+        jobId: created.job.id,
+        owner,
+        name,
+        commitSha: sha,
+      });
+
+      await withTimeout(done.promise, 25_000, 'all-syntax-skipped retry completion');
+      expect(publishGateCalls).toBe(2);
+
+      const loaded = await repository.findJobWithRepository(created.job.id);
+      expect(loaded?.repository.status).toBe('ready');
+      expect(loaded?.repository.graphPersistedAt).not.toBeNull();
+      // Exact counts: 1 supported .ts file discovered, 2 skipped (1 README + 1 broken.ts) — NEVER double-counted
+      expect(loaded?.repository.fileCount).toBe(1);
+      expect(loaded?.repository.skippedFilesCount).toBe(2);
+      expect(loaded?.repository !== undefined && isEmptyJsTsRepository(loaded.repository)).toBe(
+        false,
+      );
+      expect(loaded?.job.stage).toBe('ready');
+      expect(loaded?.job.progressPct).toBe(100);
+      expect(loaded?.job.attemptGeneration).toBe(2);
+
+      if (dbClient !== undefined) {
+        expect(
+          await dbClient.db.select().from(nodes).where(eq(nodes.repoId, created.repository.id)),
+        ).toEqual([]);
+        expect(
+          await dbClient.db.select().from(edges).where(eq(edges.repoId, created.repository.id)),
+        ).toEqual([]);
+      }
+      expect(await readdir(caseTempDir)).toEqual([]);
+    } finally {
+      const closed = await confirmWorkerClosed(worker, 10_000);
+      expect(closed).toBe(true);
+      await obliterateAndCloseQueue(caseQueue);
+      await rm(caseTempDir, { recursive: true, force: true });
+      outstandingCaseOwnership.delete(caseQueueName);
+    }
+  });
+
+  it('reconciles a real committed PostgreSQL graph publication when the COMMIT acknowledgement is lost (simulated transport error)', async () => {
+    const caseQueueName = `${queueName}-uncertain-commit-ack`;
+    outstandingCaseOwnership.add(caseQueueName);
+    const caseTempDir = await mkdtemp(path.join(tempBaseDir, 'uncertain-commit-ack-'));
+    const caseQueue = createIngestionQueue({
+      redisUrl,
+      queueName: caseQueueName,
+      prefix: queuePrefix,
+      attempts: 1,
+    });
+
+    const owner = 'archon-p55-b';
+    const name = 'lost-ack-repo';
+    const sha = '9999999999999999999999999999999999999999';
+    const prefix = 'archon-p55-b-lost-ack-repo-9999999';
+    const mockFetch = createTarballMockFetch(owner, name, sha, makeStandardFixtureEntries(prefix));
+
+    const adapter = createProductionParserAdapter({
+      limits: { maxSupportedFiles: 500, maxTotalBytes: 50 * 1024 * 1024 },
+    });
+
+    let reconcileCalls = 0;
+    const lostAckRepository: IngestionRepository = {
+      ...repository,
+      async publishRepositoryGraph(ownership, input) {
+        // Real PostgreSQL transaction commits completely, then transport drops the COMMIT ack (08007)
+        const committed = await repository.publishRepositoryGraph(ownership, input);
+        expect(committed.outcome).toBe('published');
+        throw new DbError('DB_QUERY_ERROR', 'Simulated lost COMMIT acknowledgement', {
+          pgCode: PG_TRANSACTION_RESOLUTION_UNKNOWN_CODE,
+        });
+      },
+      async reconcilePublishedAttempt(ownership) {
+        reconcileCalls += 1;
+        return repository.reconcilePublishedAttempt(ownership);
+      },
+    };
+
+    const processor = createIngestionJobProcessor({
+      repository: lostAckRepository,
+      logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      tempBaseDir: caseTempDir,
+      fetchImpl: mockFetch,
+      parserAdapter: adapter,
+    });
+
+    const worker = createIngestionWorker({
+      redisUrl,
+      queueName: caseQueueName,
+      prefix: queuePrefix,
+      drainDelay: 1,
+      processor,
+      logger,
+    });
+
+    try {
+      const created = await repository.createOrGetActive({
+        githubUrl: `https://github.com/${owner}/${name}`,
+        owner,
+        name,
+        defaultBranch: 'main',
+        commitSha: sha,
+        sizeKb: 10,
+      });
+
+      const done = createDeferred<string>();
+      worker.once('completed', (job) => {
+        done.resolve(job.id ?? '');
+      });
+      worker.once('failed', (_job, err) => {
+        done.reject(err);
+      });
+
+      await enqueueIngestionJob(caseQueue, {
+        repoId: created.repository.id,
+        jobId: created.job.id,
+        owner,
+        name,
+        commitSha: sha,
+      });
+
+      await withTimeout(done.promise, 20_000, 'lost COMMIT ack reconciled completion');
+      expect(reconcileCalls).toBe(1);
+
+      const loaded = await repository.findJobWithRepository(created.job.id);
+      expect(loaded?.repository.status).toBe('ready');
+      expect(loaded?.repository.graphPersistedAt).not.toBeNull();
+      expect(loaded?.job.stage).toBe('ready');
+      expect(loaded?.job.progressPct).toBe(100);
+      if (dbClient !== undefined) {
+        expect(
+          await dbClient.db.select().from(nodes).where(eq(nodes.repoId, created.repository.id)),
+        ).toHaveLength(5);
+        expect(
+          await dbClient.db.select().from(edges).where(eq(edges.repoId, created.repository.id)),
+        ).toHaveLength(2);
+      }
+      expect(await readdir(caseTempDir)).toEqual([]);
+    } finally {
+      const closed = await confirmWorkerClosed(worker, 10_000);
+      expect(closed).toBe(true);
+      await obliterateAndCloseQueue(caseQueue);
+      await rm(caseTempDir, { recursive: true, force: true });
+      outstandingCaseOwnership.delete(caseQueueName);
+    }
+  });
+
+  it('aborts and rolls back mid-publication AFTER SQL node inserts on SIGTERM, preserves workspace cleanup and strict lifecycle shutdown order', async () => {
+    if (dbClient === undefined) {
+      throw new Error('Expected initialized dbClient');
+    }
+
+    const caseQueueName = `${queueName}-shutdown-mid-publish`;
+    outstandingCaseOwnership.add(caseQueueName);
+    const caseTempDir = await mkdtemp(path.join(tempBaseDir, 'shutdown-mid-publish-'));
+    const advisoryKey = 770559;
+
+    const testDbClient = createDbClient({ databaseUrl: isolatedDbUrl, max: 3 });
+    const testRepository = createIngestionRepository(testDbClient.db);
+    const testRedis = createFastFailRedisClient({ redisUrl, logger });
+    await waitForRedisReady(testRedis);
+    const testQueue = createIngestionQueue({
+      redisUrl,
+      queueName: caseQueueName,
+      prefix: queuePrefix,
+      attempts: 1,
+    });
+
+    const owner = 'archon-p55-c';
+    const name = 'mid-publish-sigterm';
+    const sha = 'abababababababababababababababababababab';
+    const prefix = 'archon-p55-c-mid-publish-sigterm-abababa';
+    const mockFetch = createTarballMockFetch(owner, name, sha, makeStandardFixtureEntries(prefix));
+
+    const events: string[] = [];
+    const lifecycle = createWorkerServiceLifecycle({
+      serviceName: 'worker',
+      closeTimeoutMs: 10_000,
+      logger,
+      setExitCode: () => undefined,
+    });
+    lifecycle.beginStartup();
+
+    const adapter = createProductionParserAdapter({
+      limits: { maxSupportedFiles: 500, maxTotalBytes: 50 * 1024 * 1024 },
+      onFatalState: (fatal) => {
+        lifecycle.triggerFatal(fatal);
+      },
+    });
+
+    const created = await testRepository.createOrGetActive({
+      githubUrl: `https://github.com/${owner}/${name}`,
+      owner,
+      name,
+      defaultBranch: 'main',
+      commitSha: sha,
+      sizeKb: 10,
+    });
+
+    // Pause publication strictly AFTER real SQL node inserts have executed inside PostgreSQL
+    await dbClient.pool.query(`
+      CREATE OR REPLACE FUNCTION pause_worker_edge_insert() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.repo_id = '${created.repository.id}'::uuid THEN
+          PERFORM pg_advisory_xact_lock(${String(advisoryKey)});
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER trg_pause_worker_edge_insert
+      BEFORE INSERT ON edges
+      FOR EACH ROW EXECUTE FUNCTION pause_worker_edge_insert();
+    `);
+
+    let capturedWorkspaceDir = '';
+    const extractRepo: ExtractRepoFn = (opts, callback) =>
+      withExtractedRepo(opts, async (workspace) => {
+        capturedWorkspaceDir = workspace.rootDir;
+        return callback(workspace);
+      });
+
+    const baseProcessor = createIngestionJobProcessor({
+      repository: testRepository,
+      logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 50,
+      tempBaseDir: caseTempDir,
+      fetchImpl: mockFetch,
+      extractRepo,
+      parserAdapter: adapter,
+      shutdownSignal: lifecycle.shutdownSignal,
+      fatalSignal: lifecycle.fatalSignal,
+      isFatalState: lifecycle.isFatal,
+      onInfrastructureFailure: (err) => {
+        lifecycle.triggerInfrastructureFailure(err);
+      },
+    });
+    const processor = lifecycle.wrapProcessor(baseProcessor, {
+      delegateStoppedToProcessor: true,
+    });
+
+    const testWorker = createIngestionWorker({
+      redisUrl,
+      queueName: caseQueueName,
+      prefix: queuePrefix,
+      drainDelay: 1,
+      autorun: false,
+      processor,
+      logger,
+    });
+
+    const workerCloseStarted = createDeferred();
+    lifecycle.setWorker({
+      close: async (force?: boolean) => {
+        events.push(`worker.close.start:${String(force)}`);
+        workerCloseStarted.resolve();
+        await testWorker.close(force);
+        events.push('worker.close.done');
+      },
+    });
+    lifecycle.setQueue({
+      close: async () => {
+        events.push('queue.close');
+        await testQueue.close();
+      },
+    });
+    lifecycle.addRedisClient({
+      quit: async () => {
+        events.push('redis.quit');
+        return testRedis.quit();
+      },
+      disconnect: () => {
+        events.push('redis.disconnect');
+        testRedis.disconnect();
+      },
+    });
+    lifecycle.setCloseDb(async () => {
+      events.push('db.close');
+      await testDbClient.close();
+    });
+
+    lifecycle.markRunning();
+    void testWorker.run().catch(() => undefined);
+
+    let holdClient: PoolClient | undefined;
+    try {
+      holdClient = await dbClient.pool.connect();
+      await holdClient.query('BEGIN');
+      await holdClient.query('SELECT pg_advisory_xact_lock($1)', [advisoryKey]);
+
+      await enqueueIngestionJob(testQueue, {
+        repoId: created.repository.id,
+        jobId: created.job.id,
+        owner,
+        name,
+        commitSha: sha,
+      });
+
+      // Deterministic barrier: wait until publication inserted nodes and hit the edge advisory lock
+      const deadline = Date.now() + 20_000;
+      let hitAdvisoryLock = false;
+      while (Date.now() < deadline) {
+        const res = await dbClient.pool.query<{ waiting: number }>(
+          `SELECT COUNT(*)::int AS waiting
+           FROM pg_stat_activity
+           WHERE datname = current_database()
+             AND wait_event_type = 'Lock'
+             AND wait_event = 'advisory'`,
+        );
+        if ((res.rows[0]?.waiting ?? 0) >= 1) {
+          hitAdvisoryLock = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 15));
+      }
+      expect(hitAdvisoryLock).toBe(true);
+      expect(existsSync(capturedWorkspaceDir)).toBe(true);
+
+      // Trigger SIGTERM mid-publication after SQL node inserts have executed
+      const shutdownPromise = lifecycle.shutdown('SIGTERM');
+      await withTimeout(workerCloseStarted.promise, 5_000, 'worker.close initiation');
+
+      // Release advisory lock -> publication aborts before COMMIT, rolls back nodes, marks failed, cleans workspace
+      await holdClient.query('ROLLBACK');
+      holdClient.release();
+      holdClient = undefined;
+
+      const outcome = await withTimeout(shutdownPromise, 15_000, 'mid-publish SIGTERM shutdown');
+      expect(outcome.confirmed).toBe(true);
+      expect(outcome.exitCode).toBe(0);
+      expect(events).toEqual([
+        'worker.close.start:undefined',
+        'worker.close.done',
+        'queue.close',
+        'redis.quit',
+        'db.close',
+      ]);
+
+      // Zero partial nodes/edges survived rollback; repository marked INGESTION_CANCELLED, workspace purged
+      expect(
+        await dbClient.db.select().from(nodes).where(eq(nodes.repoId, created.repository.id)),
+      ).toEqual([]);
+      expect(
+        await dbClient.db.select().from(edges).where(eq(edges.repoId, created.repository.id)),
+      ).toEqual([]);
+      const finalLoaded = await repository.findJobWithRepository(created.job.id);
+      expect(finalLoaded?.repository.status).toBe('failed');
+      expect(finalLoaded?.repository.errorCode).toBe('INGESTION_CANCELLED');
+      expect(finalLoaded?.repository.graphPersistedAt).toBeNull();
+      expect(finalLoaded?.job.stage).toBe('failed');
+      expect(existsSync(capturedWorkspaceDir)).toBe(false);
+      expect(await readdir(caseTempDir)).toEqual([]);
+    } finally {
+      if (holdClient !== undefined) {
+        try {
+          await holdClient.query('ROLLBACK');
+        } catch {
+          // Ignore rollback error
+        } finally {
+          holdClient.release();
+        }
+      }
+      let teardownOutcome = await lifecycle.shutdown('EXPLICIT');
+      if (!teardownOutcome.confirmed && teardownOutcome.pendingCleanup !== undefined) {
+        teardownOutcome = await withTimeout(
+          teardownOutcome.pendingCleanup,
+          10_000,
+          'deferred mid-publish lifecycle cleanup',
+        );
+      }
+      expect(teardownOutcome.confirmed).toBe(true);
+      await dbClient.pool.query(`
+        DROP TRIGGER IF EXISTS trg_pause_worker_edge_insert ON edges;
+        DROP FUNCTION IF EXISTS pause_worker_edge_insert();
+      `);
+      const cleanupQueue = createIngestionQueue({
+        redisUrl,
+        queueName: caseQueueName,
+        prefix: queuePrefix,
+      });
+      await obliterateAndCloseQueue(cleanupQueue);
+      await rm(caseTempDir, { recursive: true, force: true });
+      outstandingCaseOwnership.delete(caseQueueName);
+    }
+  });
+
+  it('accurately accounts for genuinely empty, all-oversized, and mixed-source repositories across retries with real extractor and compiled parser', async () => {
+    if (dbClient === undefined) {
+      throw new Error('Expected initialized dbClient');
+    }
+
+    const caseQueueName = `${queueName}-count-accounting`;
+    outstandingCaseOwnership.add(caseQueueName);
+    const caseTempDir = await mkdtemp(path.join(tempBaseDir, 'count-accounting-'));
+    const caseQueue = createIngestionQueue({
+      redisUrl,
+      queueName: caseQueueName,
+      prefix: queuePrefix,
+      attempts: 2,
+      backoffDelayMs: 50,
+    });
+
+    const emptyRepo = {
+      owner: 'archon-cnt',
+      name: 'genuinely-empty',
+      sha: 'e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1',
+      prefix: 'archon-cnt-genuinely-empty-e1e1e1e',
+    };
+    const allOversizedRepo = {
+      owner: 'archon-cnt',
+      name: 'all-oversized',
+      sha: 'e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2',
+      prefix: 'archon-cnt-all-oversized-e2e2e2e',
+    };
+    const mixedRepo = {
+      owner: 'archon-cnt',
+      name: 'mixed-source',
+      sha: 'e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3',
+      prefix: 'archon-cnt-mixed-source-e3e3e3e',
+    };
+
+    const bigTs = `export const big = "${'x'.repeat(200)}";\n`;
+    const bigConfig = `{"name":"cfg","pad":"${'y'.repeat(200)}"}\n`;
+
+    const mockFetch = createMultiRepoTarballMockFetch([
+      {
+        ...emptyRepo,
+        entries: [
+          { path: `${emptyRepo.prefix}/`, typeFlag: '5' },
+          { path: `${emptyRepo.prefix}/README.md`, content: '# python repo\n' },
+          { path: `${emptyRepo.prefix}/main.py`, content: 'print("hello")\n' },
+          { path: `${emptyRepo.prefix}/package.json`, content: bigConfig },
+        ],
+      },
+      {
+        ...allOversizedRepo,
+        entries: [
+          { path: `${allOversizedRepo.prefix}/`, typeFlag: '5' },
+          { path: `${allOversizedRepo.prefix}/src/huge1.ts`, content: bigTs },
+          { path: `${allOversizedRepo.prefix}/src/huge2.ts`, content: bigTs },
+          { path: `${allOversizedRepo.prefix}/README.md`, content: '# oversized ts\n' },
+        ],
+      },
+      {
+        ...mixedRepo,
+        entries: [
+          { path: `${mixedRepo.prefix}/`, typeFlag: '5' },
+          { path: `${mixedRepo.prefix}/src/`, typeFlag: '5' },
+          { path: `${mixedRepo.prefix}/src/helper.ts`, content: REAL_PARSER_HELPER_SOURCE },
+          { path: `${mixedRepo.prefix}/src/index.ts`, content: REAL_PARSER_INDEX_SOURCE },
+          { path: `${mixedRepo.prefix}/src/broken.ts`, content: 'export const = {{{ invalid;\n' },
+          { path: `${mixedRepo.prefix}/src/huge.ts`, content: bigTs },
+          { path: `${mixedRepo.prefix}/package.json`, content: bigConfig },
+          { path: `${mixedRepo.prefix}/README.md`, content: '# mixed\n' },
+        ],
+      },
+    ]);
+
+    const adapter = createProductionParserAdapter({
+      limits: { maxSupportedFiles: 500, maxTotalBytes: 50 * 1024 * 1024 },
+    });
+
+    // Use real withExtractedRepo with maxFileBytes: 128 so oversized .ts and oversized package.json are skipped naturally
+    const extractWithSmallFileCap: ExtractRepoFn = (opts, callback) =>
+      withExtractedRepo({ ...opts, maxFileBytes: 128 }, callback);
+
+    let mixedPublishAttempts = 0;
+    const processor = createIngestionJobProcessor({
+      repository,
+      logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      tempBaseDir: caseTempDir,
+      fetchImpl: mockFetch,
+      extractRepo: extractWithSmallFileCap,
+      parserAdapter: adapter,
+      beforeGraphPublish: (ctx) => {
+        if (ctx.commitSha === mixedRepo.sha) {
+          mixedPublishAttempts += 1;
+          if (mixedPublishAttempts === 1) {
+            return Promise.reject(
+              new Error('transient attempt 1 pre-publish error for mixed repo'),
+            );
+          }
+        }
+        return Promise.resolve();
+      },
+    });
+
+    const worker = createIngestionWorker({
+      redisUrl,
+      queueName: caseQueueName,
+      prefix: queuePrefix,
+      drainDelay: 1,
+      processor,
+      logger,
+    });
+
+    const runOne = async (spec: { owner: string; name: string; sha: string }) => {
+      const created = await repository.createOrGetActive({
+        githubUrl: `https://github.com/${spec.owner}/${spec.name}`,
+        owner: spec.owner,
+        name: spec.name,
+        defaultBranch: 'main',
+        commitSha: spec.sha,
+        sizeKb: 10,
+      });
+      const done = createDeferred<string>();
+      const onCompleted = (job: IngestionBullMqJob): void => {
+        if (job.id === created.job.id) {
+          done.resolve(job.id);
+        }
+      };
+      const onFailed = (job: IngestionBullMqJob | undefined, err: Error): void => {
+        if (job?.id === created.job.id && job.attemptsMade >= 2) {
+          done.reject(err);
+        }
+      };
+      worker.on('completed', onCompleted);
+      worker.on('failed', onFailed);
+      try {
+        await enqueueIngestionJob(caseQueue, {
+          repoId: created.repository.id,
+          jobId: created.job.id,
+          owner: spec.owner,
+          name: spec.name,
+          commitSha: spec.sha,
+        });
+        await withTimeout(done.promise, 25_000, `${spec.name} completion`);
+      } finally {
+        worker.off('completed', onCompleted);
+        worker.off('failed', onFailed);
+      }
+      return created;
+    };
+
+    try {
+      // 1. Genuinely empty JS/TS repo (has README.md + main.py + oversized package.json) -> emptyJsTs = true
+      const createdEmpty = await runOne(emptyRepo);
+      const loadedEmpty = await repository.findJobWithRepository(createdEmpty.job.id);
+      if (loadedEmpty === null) {
+        throw new Error('Expected loadedEmpty');
+      }
+      expect(loadedEmpty.repository.status).toBe('ready');
+      expect(loadedEmpty.repository.graphPersistedAt).not.toBeNull();
+      expect(loadedEmpty.repository.fileCount).toBe(0);
+      expect(loadedEmpty.repository.skippedFilesCount).toBe(3);
+      expect(isEmptyJsTsRepository(loadedEmpty.repository)).toBe(true);
+
+      // 2. All-oversized supported sources (2 oversized .ts + 1 README) -> fileCount = 2, skipped = 3, emptyJsTs = false
+      const createdAllOversized = await runOne(allOversizedRepo);
+      const loadedAllOversized = await repository.findJobWithRepository(createdAllOversized.job.id);
+      if (loadedAllOversized === null) {
+        throw new Error('Expected loadedAllOversized');
+      }
+      expect(loadedAllOversized.repository.status).toBe('ready');
+      expect(loadedAllOversized.repository.graphPersistedAt).not.toBeNull();
+      expect(loadedAllOversized.repository.fileCount).toBe(2);
+      expect(loadedAllOversized.repository.skippedFilesCount).toBe(3);
+      expect(isEmptyJsTsRepository(loadedAllOversized.repository)).toBe(false);
+
+      // 3. Mixed-source repo retried across attempt 1 -> attempt 2: exact counts, zero double counting, 5 nodes / 2 edges
+      const createdMixed = await runOne(mixedRepo);
+      expect(mixedPublishAttempts).toBe(2);
+      const loadedMixed = await repository.findJobWithRepository(createdMixed.job.id);
+      if (loadedMixed === null) {
+        throw new Error('Expected loadedMixed');
+      }
+      expect(loadedMixed.repository.status).toBe('ready');
+      expect(loadedMixed.repository.graphPersistedAt).not.toBeNull();
+      expect(loadedMixed.repository.fileCount).toBe(4); // helper.ts + index.ts + broken.ts + oversized huge.ts
+      expect(loadedMixed.repository.skippedFilesCount).toBe(4); // README.md + oversized huge.ts + oversized package.json + broken.ts
+      expect(isEmptyJsTsRepository(loadedMixed.repository)).toBe(false);
+      expect(loadedMixed.job.attemptGeneration).toBe(2);
+
+      expect(
+        await dbClient.db.select().from(nodes).where(eq(nodes.repoId, createdMixed.repository.id)),
+      ).toHaveLength(5);
+      expect(
+        await dbClient.db.select().from(edges).where(eq(edges.repoId, createdMixed.repository.id)),
+      ).toHaveLength(2);
+      expect(await readdir(caseTempDir)).toEqual([]);
+    } finally {
       const closed = await confirmWorkerClosed(worker, 10_000);
       expect(closed).toBe(true);
       await obliterateAndCloseQueue(caseQueue);

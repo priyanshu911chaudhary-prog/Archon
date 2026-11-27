@@ -5,6 +5,7 @@ import {
   classifyDbError,
   type IngestionAttemptOwnership,
   type IngestionRepository,
+  type ReconcilePublishedAttemptResult,
 } from '@archon/db';
 import type { Logger } from '@archon/shared';
 import { UnrecoverableError } from 'bullmq';
@@ -557,7 +558,8 @@ export function createIngestionJobProcessor(
           const parsingTransition = await deps.repository.transitionJobStage(ownership, {
             toStatus: 'parsing',
             progressPct: STAGE_PROGRESS.parsing,
-            fileCount: workspace.stats.supportedFilesCount,
+            fileCount:
+              workspace.stats.supportedFilesCount + workspace.stats.oversizedSupportedFilesCount,
             skippedFilesCount: workspace.stats.skippedFilesCount,
             ...(deps.now !== undefined ? { now: deps.now() } : {}),
           });
@@ -635,6 +637,12 @@ export function createIngestionJobProcessor(
           ownershipState.publicationDispatched = true;
           const publishResult = await deps.repository.publishRepositoryGraph(ownership, {
             output: analysisResult.output,
+            extractionStats: {
+              supportedFilesCount: workspace.stats.supportedFilesCount,
+              skippedFilesCount: workspace.stats.skippedFilesCount,
+              oversizedSupportedFilesCount: workspace.stats.oversizedSupportedFilesCount,
+              oversizedSkippedFilesCount: workspace.stats.oversizedSkippedFilesCount,
+            },
             signal: jobAbortController.signal,
             ...(deps.now !== undefined ? { now: deps.now() } : {}),
           });
@@ -739,49 +747,10 @@ export function createIngestionJobProcessor(
         activeOwnership !== null &&
         classified.commitOutcomeUncertain
       ) {
+        let reconciled: ReconcilePublishedAttemptResult;
         try {
-          const reconciled = await deps.repository.reconcilePublishedAttempt(activeOwnership);
-          if (reconciled.outcome === 'published_by_owner') {
-            safeLog(
-              'info',
-              safeLogContext,
-              'Reconciled uncertain graph publication as committed under current ownership',
-            );
-            return;
-          }
-          if (reconciled.outcome !== 'still_owned_unpublished') {
-            safeLog(
-              'info',
-              { ...safeLogContext, reconcileOutcome: reconciled.outcome },
-              'Reconciled uncertain graph publication as superseded or terminal; exiting cleanly',
-            );
-            return;
-          }
-          // Authoritatively confirmed rolled back while still owned by this attempt
-          if (isFinalJobAttempt(job)) {
-            safeLog(
-              'error',
-              safeLogContext,
-              'Confirmed uncertain graph publication rolled back on final attempt; marking failed',
-            );
-            await markFailedSafe(activeOwnership, classified);
-          } else {
-            safeLog(
-              'warn',
-              safeLogContext,
-              'Confirmed uncertain graph publication rolled back; leaving non-terminal for retry',
-            );
-          }
-          // eslint-disable-next-line preserve-caught-error -- Deliberately discard untrusted raw cause at the BullMQ security boundary.
-          throw new Error(classified.errorMessage);
+          reconciled = await deps.repository.reconcilePublishedAttempt(activeOwnership);
         } catch (reconcileErr) {
-          if (
-            reconcileErr instanceof Error &&
-            reconcileErr.message === classified.errorMessage &&
-            !(reconcileErr instanceof DbError)
-          ) {
-            throw reconcileErr;
-          }
           const reconcileClass = classifyDbError(reconcileErr);
           safeLog(
             'warn',
@@ -791,6 +760,41 @@ export function createIngestionJobProcessor(
           // eslint-disable-next-line preserve-caught-error -- Deliberately discard untrusted raw cause at the BullMQ security boundary.
           throw new Error(classified.errorMessage);
         }
+
+        if (reconciled.outcome === 'published_by_owner') {
+          safeLog(
+            'info',
+            safeLogContext,
+            'Reconciled uncertain graph publication as committed under current ownership',
+          );
+          return;
+        }
+        if (reconciled.outcome !== 'still_owned_unpublished') {
+          safeLog(
+            'info',
+            { ...safeLogContext, reconcileOutcome: reconciled.outcome },
+            'Reconciled uncertain graph publication as superseded or terminal; exiting cleanly',
+          );
+          return;
+        }
+
+        // Authoritatively confirmed rolled back while still owned by this attempt
+        if (isFinalJobAttempt(job)) {
+          safeLog(
+            'error',
+            safeLogContext,
+            'Confirmed uncertain graph publication rolled back on final attempt; marking failed',
+          );
+          await markFailedSafe(activeOwnership, classified);
+        } else {
+          safeLog(
+            'warn',
+            safeLogContext,
+            'Confirmed uncertain graph publication rolled back; leaving non-terminal for retry',
+          );
+        }
+        // eslint-disable-next-line preserve-caught-error -- Deliberately discard untrusted raw cause at the BullMQ security boundary.
+        throw new Error(classified.errorMessage);
       }
 
       if (!classified.retryable) {

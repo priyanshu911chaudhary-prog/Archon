@@ -63,6 +63,7 @@ const SAMPLE_WORKSPACE: ExtractedRepoWorkspace = {
     configFilesCount: 2,
     skippedFilesCount: 3,
     oversizedSkippedFilesCount: 0,
+    oversizedSupportedFilesCount: 0,
   },
 };
 
@@ -552,6 +553,12 @@ describe('createIngestionJobProcessor', () => {
     ]);
     expect(publications).toHaveLength(1);
     expect(publications[0]?.ownership.attemptGeneration).toBe(2);
+    expect(publications[0]?.input.extractionStats).toEqual({
+      supportedFilesCount: SAMPLE_WORKSPACE.stats.supportedFilesCount,
+      skippedFilesCount: SAMPLE_WORKSPACE.stats.skippedFilesCount,
+      oversizedSupportedFilesCount: SAMPLE_WORKSPACE.stats.oversizedSupportedFilesCount,
+      oversizedSkippedFilesCount: SAMPLE_WORKSPACE.stats.oversizedSkippedFilesCount,
+    });
     expect(transitions[0]?.input.fileCount).toBe(2);
     expect(transitions[0]?.input.skippedFilesCount).toBe(3);
     expect(capturedParserInputs).toEqual([
@@ -1363,14 +1370,16 @@ describe('createIngestionJobProcessor', () => {
       'building_graph',
     ]);
 
-    // 3. Uncertain publish error where reconciliation fails -> preserves non-terminal (no failed write)
+    // 3. Uncertain publish error where reconciliation fails (even with colliding error message!) -> logs warning & preserves non-terminal
+    const reconcileFailLogs = makeFakeLogger();
     const unavailableReconcileRepo = makeFakeRepository({
       onPublish: () => Promise.reject(uncertainErr),
-      onReconcile: () => Promise.reject(new Error('Connection terminated unexpectedly')),
+      onReconcile: () =>
+        Promise.reject(new Error('Database temporarily unavailable during repository ingestion.')),
     });
     const p3 = createIngestionJobProcessor({
       repository: unavailableReconcileRepo.repository,
-      logger: makeFakeLogger().logger,
+      logger: reconcileFailLogs.logger,
       maxSupportedFiles: 500,
       maxRepoSizeMb: 50,
       heartbeatIntervalMs: 0,
@@ -1381,6 +1390,37 @@ describe('createIngestionJobProcessor', () => {
       'Database temporarily unavailable during repository ingestion.',
     );
     expect(unavailableReconcileRepo.transitions.map((t) => t.input.toStatus)).toEqual([
+      'parsing',
+      'building_graph',
+    ]);
+    expect(
+      reconcileFailLogs.logs.some(
+        (l) =>
+          l.level === 'warn' && l.msg.includes('Could not reconcile uncertain graph publication'),
+      ),
+    ).toBe(true);
+
+    // 3b. Uncertain publish error reconciled as ownership_lost (newer owner active) -> exits cleanly without failing repo
+    const newerOwnerReconcileRepo = makeFakeRepository({
+      onPublish: () => Promise.reject(uncertainErr),
+      onReconcile: (ownership) =>
+        Promise.resolve({
+          outcome: 'ownership_lost',
+          storedGeneration: ownership.attemptGeneration + 1,
+          expectedGeneration: ownership.attemptGeneration,
+        }),
+    });
+    const p3b = createIngestionJobProcessor({
+      repository: newerOwnerReconcileRepo.repository,
+      logger: makeFakeLogger().logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+      parserAdapter: makeFakeParserAdapter(),
+    });
+    await expect(p3b(makeJob({ attemptsMade: 1, opts: { attempts: 2 } }))).resolves.toBeUndefined();
+    expect(newerOwnerReconcileRepo.transitions.map((t) => t.input.toStatus)).toEqual([
       'parsing',
       'building_graph',
     ]);

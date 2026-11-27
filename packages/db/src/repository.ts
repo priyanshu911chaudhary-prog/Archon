@@ -17,7 +17,9 @@ import { DbError, classifyDbError, extractPgErrorInfo, isPgUniqueViolation } fro
 import {
   GraphPublicationAbortedError,
   prepareGraphPersistencePlan,
+  resolvePublicationCounts,
   type GraphBatchOptions,
+  type PublicationExtractionStats,
 } from './graph-persistence.js';
 import {
   ACTIVE_REPOSITORY_STATUSES,
@@ -202,6 +204,12 @@ const FENCED_TRANSITION_STAGES = new Set<string>([
 
 export interface PublishRepositoryGraphInput {
   readonly output: AnalysisOutput;
+  /**
+   * Required authoritative extraction-stage counts for the current attempt so publication
+   * validates parser stats against the extraction inventory and computes final `fileCount`
+   * and `skippedFilesCount` deterministically without masking inconsistencies or double counting.
+   */
+  readonly extractionStats: PublicationExtractionStats;
   readonly batchOptions?: GraphBatchOptions;
   readonly timeouts?: TransactionTimeoutConfig;
   /** Optional cancellation signal checked between batches and before commit. */
@@ -1485,6 +1493,7 @@ export function createIngestionRepository(db: ArchonDatabase): IngestionReposito
 
     // Validate complete graph & build bounded UUID-resolved batches BEFORE opening SQL tx
     const plan = prepareGraphPersistencePlan(ownership.repoId, input.output, input.batchOptions);
+    const publicationCounts = resolvePublicationCounts(input.extractionStats, input.output);
     assertNotAborted();
 
     return runBoundedTransaction(
@@ -1506,17 +1515,8 @@ export function createIngestionRepository(db: ArchonDatabase): IngestionReposito
           );
         }
 
-        const nextFileCount = Math.max(
-          verified.repository.fileCount,
-          input.output.stats.discoveredFilesCount,
-          plan.fileNodeCount,
-        );
-        const nextSkippedFilesCount =
-          verified.repository.skippedFilesCount +
-          input.output.stats.skippedSyntaxErrorFilesCount +
-          input.output.stats.skippedOversizedFilesCount;
-        assertNonNegativePgInt32('fileCount', nextFileCount);
-        assertNonNegativePgInt32('skippedFilesCount', nextSkippedFilesCount);
+        const nextFileCount = publicationCounts.fileCount;
+        const nextSkippedFilesCount = publicationCounts.skippedFilesCount;
 
         for (const nodeBatch of plan.nodeBatches) {
           assertNotAborted();

@@ -83,6 +83,7 @@ export interface ExtractionStats {
   readonly configFilesCount: number;
   readonly skippedFilesCount: number;
   readonly oversizedSkippedFilesCount: number;
+  readonly oversizedSupportedFilesCount: number;
 }
 
 export interface ExtractedRepoWorkspace {
@@ -605,6 +606,7 @@ async function extractTarballStreamIntoDir(
   let writtenBytes = 0;
   let skippedFilesCount = 0;
   let oversizedSkippedFilesCount = 0;
+  let oversizedSupportedFilesCount = 0;
 
   const state: { fatal: TarballExtractionError | null; topLevelPrefix: string | null } = {
     fatal: null,
@@ -771,6 +773,9 @@ async function extractTarballStreamIntoDir(
       if (declaredSize > caps.maxFileBytes) {
         skippedFilesCount += 1;
         oversizedSkippedFilesCount += 1;
+        if (isSupported) {
+          oversizedSupportedFilesCount += 1;
+        }
         entry.resume();
         return;
       }
@@ -1003,6 +1008,7 @@ async function extractTarballStreamIntoDir(
       configFilesCount: configFiles.length,
       skippedFilesCount,
       oversizedSkippedFilesCount,
+      oversizedSupportedFilesCount,
     },
   };
 }

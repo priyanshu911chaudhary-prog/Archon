@@ -517,6 +517,7 @@ describe('Legacy-ready recovery, verified-empty graphs & expiration safety (Post
     // Concurrency A: lock held on contendedExtend -> deleteExpiredRepositories skips it via SKIP LOCKED
     // while deleting terminalWithGraph (and cascading its jobs, parent-child nodes, and edges).
     let lockClientA: PoolClient | undefined;
+    let deletePromiseA: ReturnType<IngestionRepository['deleteExpiredRepositories']> | undefined;
     try {
       lockClientA = await clientA.pool.connect();
       await lockClientA.query('BEGIN');
@@ -525,11 +526,8 @@ describe('Legacy-ready recovery, verified-empty graphs & expiration safety (Post
         [contendedExtend.repository.id, contendedDelete.repository.id],
       );
 
-      const deleted1 = await withTimeout(
-        repoB.deleteExpiredRepositories(tExpiredNow),
-        5_000,
-        'SKIP LOCKED expiration delete',
-      );
+      deletePromiseA = repoB.deleteExpiredRepositories(tExpiredNow);
+      const deleted1 = await withTimeout(deletePromiseA, 5_000, 'SKIP LOCKED expiration delete');
       expect(deleted1).toContain(terminalWithGraph.repository.id);
       expect(deleted1).not.toContain(activeExpired.repository.id);
       expect(deleted1).not.toContain(sampleReady.repository.id);
@@ -541,6 +539,9 @@ describe('Legacy-ready recovery, verified-empty graphs & expiration safety (Post
       lockClientA = undefined;
     } finally {
       await safeRollbackAndRelease(lockClientA);
+      if (deletePromiseA !== undefined) {
+        await Promise.allSettled([deletePromiseA]);
+      }
     }
 
     // Verify cascade removed jobs, nodes, and edges for terminalWithGraph

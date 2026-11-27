@@ -46,9 +46,12 @@ export {
   hasUnsafePgText,
   normalizeSnippetText,
   prepareGraphPersistencePlan,
+  resolvePublicationCounts,
   type GraphBatchOptions,
   type GraphPersistencePlan,
   type GraphValidationReasonCode,
+  type PublicationExtractionStats,
+  type ResolvedPublicationCounts,
 } from './graph-persistence.js';
 
 export { getMigrationsFolder, runMigrations } from './migrate.js';

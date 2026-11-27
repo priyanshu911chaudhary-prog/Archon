@@ -227,7 +227,10 @@ export type NewEdgeRecord = typeof edges.$inferInsert;
 
 /**
  * Derived emptyJsTs indicator (no extra DB column): true when ingestion finished
- * cleanly with zero supported TS/JS files (e.g. a 100% Python repo).
+ * cleanly with a persisted graph (`status === 'ready'`, `graphPersistedAt !== null`)
+ * and zero supported TS/JS sources encountered (`fileCount === 0`, including oversized
+ * supported sources). General skipped files (e.g., README.md, Python files, or oversized
+ * config files) do not disqualify an empty JS/TS repository.
  */
 export function isEmptyJsTsRepository(
   repo: Pick<RepositoryRecord, 'status' | 'fileCount'> & {

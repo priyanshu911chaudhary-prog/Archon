@@ -9,8 +9,9 @@ import {
   hasUnsafePgText,
   normalizeSnippetText,
   prepareGraphPersistencePlan,
+  resolvePublicationCounts,
 } from './graph-persistence.js';
-import { MAX_QUALIFIED_NAME_UTF8_BYTES } from './schema.js';
+import { MAX_QUALIFIED_NAME_UTF8_BYTES, isEmptyJsTsRepository } from './schema.js';
 
 const REPO_ID = '00000000-0000-4000-8000-000000000001';
 const HASH_A = 'a'.repeat(64);
@@ -420,5 +421,150 @@ describe('packages/db/src/graph-persistence', () => {
         maxBatchBytes: GRAPH_BATCH_MAX_BYTES + 1,
       }),
     ).toThrow(/maxBatchBytes/);
+  });
+
+  it('validates parser counts against extraction inventory, computes exact fileCount/skippedFilesCount, and derives emptyJsTs from zero supported sources', () => {
+    const persistedNow = new Date('2026-11-27T18:00:00.000Z');
+
+    // 1. Genuinely empty JS/TS repo with unsupported files & an oversized config file
+    const emptyCounts = resolvePublicationCounts(
+      {
+        supportedFilesCount: 0,
+        skippedFilesCount: 3, // README.md + main.py + oversized package.json
+        oversizedSupportedFilesCount: 0,
+        oversizedSkippedFilesCount: 1,
+      },
+      makeOutput([]),
+    );
+    expect(emptyCounts).toEqual({
+      fileCount: 0,
+      skippedFilesCount: 3,
+      extractedNotParsedCount: 0,
+    });
+    expect(
+      isEmptyJsTsRepository({
+        status: 'ready',
+        fileCount: emptyCounts.fileCount,
+        graphPersistedAt: persistedNow,
+      }),
+    ).toBe(true);
+
+    // 2. All-oversized supported sources (0 extracted, 2 oversized supported sources + 1 README)
+    const allOversized = resolvePublicationCounts(
+      {
+        supportedFilesCount: 0,
+        skippedFilesCount: 3,
+        oversizedSupportedFilesCount: 2,
+        oversizedSkippedFilesCount: 2,
+      },
+      makeOutput([]),
+    );
+    expect(allOversized).toEqual({
+      fileCount: 2,
+      skippedFilesCount: 3,
+      extractedNotParsedCount: 0,
+    });
+    expect(
+      isEmptyJsTsRepository({
+        status: 'ready',
+        fileCount: allOversized.fileCount,
+        graphPersistedAt: persistedNow,
+      }),
+    ).toBe(false);
+
+    // 3. All-syntax-invalid supported sources (2 extracted, 2 syntax-invalid + 1 README)
+    const allSyntaxInvalid = resolvePublicationCounts(
+      {
+        supportedFilesCount: 2,
+        skippedFilesCount: 1,
+        oversizedSupportedFilesCount: 0,
+        oversizedSkippedFilesCount: 0,
+      },
+      makeOutput([], [], { discoveredFilesCount: 2, skippedSyntaxErrorFilesCount: 2 }),
+    );
+    expect(allSyntaxInvalid).toEqual({
+      fileCount: 2,
+      skippedFilesCount: 3,
+      extractedNotParsedCount: 2,
+    });
+    expect(
+      isEmptyJsTsRepository({
+        status: 'ready',
+        fileCount: allSyntaxInvalid.fileCount,
+        graphPersistedAt: persistedNow,
+      }),
+    ).toBe(false);
+
+    // 4. Mixed-source repo: 2 parsed + 1 syntax-invalid + 1 unreadable + 1 extractor-oversized .ts + 1 oversized config + 1 README
+    const mixedOutput: AnalysisOutput = {
+      ...makeOutput([makeFile('src/a.ts', null), makeFile('src/b.ts', null)], [], {
+        discoveredFilesCount: 3,
+        parsedFilesCount: 2,
+        skippedSyntaxErrorFilesCount: 1,
+      }),
+      warnings: [
+        {
+          code: 'UNREADABLE_FILE',
+          filePath: 'src/unreadable.ts',
+          message: 'Permission denied',
+        },
+      ],
+    };
+    const mixedCounts = resolvePublicationCounts(
+      {
+        supportedFilesCount: 4, // a.ts + b.ts + broken.ts + unreadable.ts
+        skippedFilesCount: 3, // README.md + oversized huge.ts + oversized package.json
+        oversizedSupportedFilesCount: 1,
+        oversizedSkippedFilesCount: 2,
+      },
+      mixedOutput,
+    );
+    expect(mixedCounts).toEqual({
+      fileCount: 5, // 4 extracted + 1 oversized supported
+      skippedFilesCount: 5, // 3 extraction skips + 2 extracted not parsed (broken + unreadable)
+      extractedNotParsedCount: 2,
+    });
+
+    // 5. Rejects inconsistent parser/extraction counts instead of masking with Math.max()
+    // Parser claims more files than extracted
+    expectValidationReason(
+      () =>
+        resolvePublicationCounts(
+          {
+            supportedFilesCount: 1,
+            skippedFilesCount: 0,
+            oversizedSupportedFilesCount: 0,
+          },
+          makeOutput([makeFile('src/a.ts', null), makeFile('src/b.ts', null)]),
+        ),
+      'INVALID_GRAPH_STATS',
+    );
+    // Parser silently dropped extracted files without warnings or oversized counts
+    expectValidationReason(
+      () =>
+        resolvePublicationCounts(
+          {
+            supportedFilesCount: 2,
+            skippedFilesCount: 0,
+            oversizedSupportedFilesCount: 0,
+          },
+          makeOutput([makeFile('src/a.ts', null)]),
+        ),
+      'INVALID_GRAPH_STATS',
+    );
+    // Impossible extraction subset bounds
+    expectValidationReason(
+      () =>
+        resolvePublicationCounts(
+          {
+            supportedFilesCount: 0,
+            skippedFilesCount: 1,
+            oversizedSupportedFilesCount: 2,
+            oversizedSkippedFilesCount: 1,
+          },
+          makeOutput([]),
+        ),
+      'INVALID_GRAPH_STATS',
+    );
   });
 });

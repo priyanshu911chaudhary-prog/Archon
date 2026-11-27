@@ -653,3 +653,95 @@ export function prepareGraphPersistencePlan(
     edgeBatches,
   };
 }
+
+export interface PublicationExtractionStats {
+  readonly supportedFilesCount: number;
+  readonly skippedFilesCount: number;
+  readonly oversizedSupportedFilesCount: number;
+  readonly oversizedSkippedFilesCount?: number;
+}
+
+export interface ResolvedPublicationCounts {
+  readonly fileCount: number;
+  readonly skippedFilesCount: number;
+  readonly extractedNotParsedCount: number;
+}
+
+/**
+ * Validates authoritative extraction statistics and parser `AnalysisOutput.stats` against
+ * the extracted supported-source inventory (without masking mismatches via `Math.max()`),
+ * returning exact repository `fileCount` and `skippedFilesCount` for atomic publication.
+ */
+export function resolvePublicationCounts(
+  extractionStats: PublicationExtractionStats,
+  output: AnalysisOutput,
+): ResolvedPublicationCounts {
+  assertNonNegativeStatInt32(extractionStats.supportedFilesCount);
+  assertNonNegativeStatInt32(extractionStats.skippedFilesCount);
+  assertNonNegativeStatInt32(extractionStats.oversizedSupportedFilesCount);
+  if (extractionStats.oversizedSkippedFilesCount !== undefined) {
+    assertNonNegativeStatInt32(extractionStats.oversizedSkippedFilesCount);
+    if (extractionStats.oversizedSupportedFilesCount > extractionStats.oversizedSkippedFilesCount) {
+      throw new GraphPersistenceValidationError(
+        'INVALID_GRAPH_STATS',
+        'oversizedSupportedFilesCount must not exceed oversizedSkippedFilesCount.',
+      );
+    }
+    if (extractionStats.oversizedSkippedFilesCount > extractionStats.skippedFilesCount) {
+      throw new GraphPersistenceValidationError(
+        'INVALID_GRAPH_STATS',
+        'oversizedSkippedFilesCount must not exceed extraction skippedFilesCount.',
+      );
+    }
+  }
+  if (extractionStats.oversizedSupportedFilesCount > extractionStats.skippedFilesCount) {
+    throw new GraphPersistenceValidationError(
+      'INVALID_GRAPH_STATS',
+      'oversizedSupportedFilesCount must not exceed extraction skippedFilesCount.',
+    );
+  }
+
+  const parserAccountedFiles =
+    output.stats.discoveredFilesCount + output.stats.skippedOversizedFilesCount;
+  if (
+    output.stats.parsedFilesCount > extractionStats.supportedFilesCount ||
+    parserAccountedFiles > extractionStats.supportedFilesCount
+  ) {
+    throw new GraphPersistenceValidationError(
+      'INVALID_GRAPH_STATS',
+      'Parser file counts exceed extracted supported source inventory.',
+    );
+  }
+
+  let unreadableOrSymlinkWarnings = 0;
+  for (const warning of output.warnings) {
+    if (warning.code === 'UNREADABLE_FILE' || warning.code === 'UNSAFE_SYMLINK_SKIPPED') {
+      unreadableOrSymlinkWarnings += 1;
+    }
+  }
+  if (
+    parserAccountedFiles + unreadableOrSymlinkWarnings + output.stats.truncatedWarningsCount <
+    extractionStats.supportedFilesCount
+  ) {
+    throw new GraphPersistenceValidationError(
+      'INVALID_GRAPH_STATS',
+      'Parser file counts do not account for all extracted supported sources.',
+    );
+  }
+
+  const fileCount =
+    extractionStats.supportedFilesCount + extractionStats.oversizedSupportedFilesCount;
+  const extractedNotParsedCount =
+    extractionStats.supportedFilesCount - output.stats.parsedFilesCount;
+  const skippedFilesCount = extractionStats.skippedFilesCount + extractedNotParsedCount;
+
+  assertNonNegativeStatInt32(fileCount);
+  assertNonNegativeStatInt32(extractedNotParsedCount);
+  assertNonNegativeStatInt32(skippedFilesCount);
+
+  return {
+    fileCount,
+    skippedFilesCount,
+    extractedNotParsedCount,
+  };
+}

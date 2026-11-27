@@ -369,6 +369,11 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
     });
     const finalized = await repoA.publishRepositoryGraph(claimMax.ownership, {
       output: EMPTY_ANALYSIS_OUTPUT,
+      extractionStats: {
+        supportedFilesCount: 0,
+        skippedFilesCount: 0,
+        oversizedSupportedFilesCount: 0,
+      },
       now: t4,
     });
     expect(finalized.applied).toBe(true);
@@ -520,6 +525,11 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
     expect(
       await repoA.publishRepositoryGraph(own1, {
         output: EMPTY_ANALYSIS_OUTPUT,
+        extractionStats: {
+          supportedFilesCount: 0,
+          skippedFilesCount: 0,
+          oversizedSupportedFilesCount: 0,
+        },
         now: t4,
       }),
     ).toEqual({
@@ -561,7 +571,7 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
     const parsed2 = await repoB.transitionJobStage(own2, {
       toStatus: 'parsing',
       progressPct: 60,
-      fileCount: 12,
+      fileCount: 2,
       skippedFilesCount: 2,
       now: t4,
     });
@@ -576,13 +586,18 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
 
     const ready = await repoB.publishRepositoryGraph(own2, {
       output: EMPTY_ANALYSIS_OUTPUT,
+      extractionStats: {
+        supportedFilesCount: 0,
+        skippedFilesCount: 2,
+        oversizedSupportedFilesCount: 2,
+      },
       now: t5,
     });
     expect(ready.applied).toBe(true);
     if (ready.applied) {
       expect(ready.repository.status).toBe('ready');
       expect(ready.repository.graphPersistedAt?.getTime()).toBe(t5.getTime());
-      expect(ready.repository.fileCount).toBe(12);
+      expect(ready.repository.fileCount).toBe(2);
       expect(ready.repository.skippedFilesCount).toBe(2);
       expect(ready.job.stage).toBe('ready');
       expect(ready.job.finishedAt?.getTime()).toBe(t5.getTime());
@@ -606,6 +621,8 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
     });
 
     let blocker1: PoolClient | undefined;
+    let claimAPromise: ReturnType<IngestionRepository['claimIngestionAttempt']> | undefined;
+    let claimBPromise: ReturnType<IngestionRepository['claimIngestionAttempt']> | undefined;
     try {
       blocker1 = await clientA.pool.connect();
       await blocker1.query('BEGIN');
@@ -613,14 +630,14 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
         eqCreated.repository.id,
       ]);
 
-      const claimAPromise = repoA.claimIngestionAttempt({
+      claimAPromise = repoA.claimIngestionAttempt({
         repoId: eqCreated.repository.id,
         jobId: eqCreated.job.id,
         bullmqJobId: eqCreated.job.id,
         commitSha: shaEq,
         attemptGeneration: 1,
       });
-      const claimBPromise = repoB.claimIngestionAttempt({
+      claimBPromise = repoB.claimIngestionAttempt({
         repoId: eqCreated.repository.id,
         jobId: eqCreated.job.id,
         bullmqJobId: eqCreated.job.id,
@@ -646,6 +663,7 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
       expect(loadedEq?.job.attemptGeneration).toBe(1);
     } finally {
       await safeRollbackAndRelease(blocker1);
+      await Promise.allSettled([claimAPromise, claimBPromise].filter((p) => p !== undefined));
     }
 
     // 2. Concurrent gen 1 vs gen 2 race: highest generation (2) always wins regardless of lock grant order
@@ -660,6 +678,8 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
     });
 
     let blocker2: PoolClient | undefined;
+    let gen1Promise: ReturnType<IngestionRepository['claimIngestionAttempt']> | undefined;
+    let gen2Promise: ReturnType<IngestionRepository['claimIngestionAttempt']> | undefined;
     try {
       blocker2 = await clientA.pool.connect();
       await blocker2.query('BEGIN');
@@ -667,14 +687,14 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
         raceCreated.repository.id,
       ]);
 
-      const gen1Promise = repoA.claimIngestionAttempt({
+      gen1Promise = repoA.claimIngestionAttempt({
         repoId: raceCreated.repository.id,
         jobId: raceCreated.job.id,
         bullmqJobId: raceCreated.job.id,
         commitSha: shaRace,
         attemptGeneration: 1,
       });
-      const gen2Promise = repoB.claimIngestionAttempt({
+      gen2Promise = repoB.claimIngestionAttempt({
         repoId: raceCreated.repository.id,
         jobId: raceCreated.job.id,
         bullmqJobId: raceCreated.job.id,
@@ -699,6 +719,7 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
       expect(loadedRace?.job.attemptGeneration).toBe(2);
     } finally {
       await safeRollbackAndRelease(blocker2);
+      await Promise.allSettled([gen1Promise, gen2Promise].filter((p) => p !== undefined));
     }
 
     // 3. Newer generation commits while delayed older generation is actively blocked on the row lock
@@ -713,6 +734,7 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
     });
 
     let newerHolder: PoolClient | undefined;
+    let delayedOlderClaim: ReturnType<IngestionRepository['claimIngestionAttempt']> | undefined;
     const commitNewerGate = createDeferred();
     try {
       newerHolder = await clientA.pool.connect();
@@ -731,7 +753,7 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
         [delayedCreated.job.id, delayedCreated.job.id, delayedCreated.repository.id],
       );
 
-      const delayedOlderClaim = repoB.claimIngestionAttempt({
+      delayedOlderClaim = repoB.claimIngestionAttempt({
         repoId: delayedCreated.repository.id,
         jobId: delayedCreated.job.id,
         bullmqJobId: delayedCreated.job.id,
@@ -761,6 +783,9 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
     } finally {
       commitNewerGate.resolve();
       await safeRollbackAndRelease(newerHolder);
+      if (delayedOlderClaim !== undefined) {
+        await Promise.allSettled([delayedOlderClaim]);
+      }
     }
   });
 
@@ -802,6 +827,7 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
 
     // 1. Repository row lock held -> NOWAIT returns busy without blocking or mutating
     let repoLockClient: PoolClient | undefined;
+    let busyRepoPromise: ReturnType<IngestionRepository['touchJobHeartbeat']> | undefined;
     try {
       repoLockClient = await clientA.pool.connect();
       await repoLockClient.query('BEGIN');
@@ -809,8 +835,9 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
         created.repository.id,
       ]);
 
+      busyRepoPromise = repoB.touchJobHeartbeat(own1, tBusy1);
       const busyRepo = await withTimeout(
-        repoB.touchJobHeartbeat(own1, tBusy1),
+        busyRepoPromise,
         3_000,
         'NOWAIT heartbeat during repo lock',
       );
@@ -821,6 +848,9 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
       repoLockClient = undefined;
     } finally {
       await safeRollbackAndRelease(repoLockClient);
+      if (busyRepoPromise !== undefined) {
+        await Promise.allSettled([busyRepoPromise]);
+      }
     }
 
     const afterRepoLock = await repoB.touchJobHeartbeat(own1, tOk1);
@@ -828,6 +858,7 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
 
     // 2. Ingestion-job row lock held -> NOWAIT also returns busy
     let jobLockClient: PoolClient | undefined;
+    let busyJobPromise: ReturnType<IngestionRepository['touchJobHeartbeat']> | undefined;
     try {
       jobLockClient = await clientA.pool.connect();
       await jobLockClient.query('BEGIN');
@@ -835,11 +866,8 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
         created.job.id,
       ]);
 
-      const busyJob = await withTimeout(
-        repoB.touchJobHeartbeat(own1, tBusy2),
-        3_000,
-        'NOWAIT heartbeat during job lock',
-      );
+      busyJobPromise = repoB.touchJobHeartbeat(own1, tBusy2);
+      const busyJob = await withTimeout(busyJobPromise, 3_000, 'NOWAIT heartbeat during job lock');
       expect(busyJob).toEqual({ outcome: 'busy', updated: false });
 
       await jobLockClient.query('ROLLBACK');
@@ -847,6 +875,9 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
       jobLockClient = undefined;
     } finally {
       await safeRollbackAndRelease(jobLockClient);
+      if (busyJobPromise !== undefined) {
+        await Promise.allSettled([busyJobPromise]);
+      }
     }
 
     const afterJobLock = await repoB.touchJobHeartbeat(own1, tOk2);
@@ -953,6 +984,8 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
     expect(freshBeat.outcome).toBe('updated');
 
     let lockClient: PoolClient | undefined;
+    let firstSweepPromise: ReturnType<IngestionRepository['sweepStaleJobs']> | undefined;
+    let secondSweepPromise: ReturnType<IngestionRepository['sweepStaleJobs']> | undefined;
     try {
       // Hold FOR UPDATE locks on the FIRST TWO repos in UUID order
       lockClient = await clientA.pool.connect();
@@ -963,16 +996,13 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
       );
 
       // Batch limit 1 with batchSize 1: must SKIP lockedA & lockedB without starvation and sweep 1 unlocked stale row
-      const firstSweep = await withTimeout(
-        repoB.sweepStaleJobs({
-          staleThresholdMs,
-          batchSize: 1,
-          maxBatches: 1,
-          now: tSweep,
-        }),
-        5_000,
-        'bounded SKIP LOCKED sweep 1',
-      );
+      firstSweepPromise = repoB.sweepStaleJobs({
+        staleThresholdMs,
+        batchSize: 1,
+        maxBatches: 1,
+        now: tSweep,
+      });
+      const firstSweep = await withTimeout(firstSweepPromise, 5_000, 'bounded SKIP LOCKED sweep 1');
       expect(firstSweep.count).toBe(1);
       expect(firstSweep.batchesProcessed).toBe(1);
       expect(firstSweep.reachedLimit).toBe(true);
@@ -981,13 +1011,14 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
       expect(firstSweep.sweptRepoIds).not.toContain(unlockedRefreshed.repository.id);
 
       // Second sweep processes remaining unlocked stale row and exhausts candidates cleanly
+      secondSweepPromise = repoB.sweepStaleJobs({
+        staleThresholdMs,
+        batchSize: 2,
+        maxBatches: 5,
+        now: tSweep,
+      });
       const secondSweep = await withTimeout(
-        repoB.sweepStaleJobs({
-          staleThresholdMs,
-          batchSize: 2,
-          maxBatches: 5,
-          now: tSweep,
-        }),
+        secondSweepPromise,
         5_000,
         'bounded SKIP LOCKED sweep 2',
       );
@@ -1002,6 +1033,9 @@ describe('Ingestion attempt ownership & concurrency (PostgreSQL integration)', (
       lockClient = undefined;
     } finally {
       await safeRollbackAndRelease(lockClient);
+      await Promise.allSettled(
+        [firstSweepPromise, secondSweepPromise].filter((p) => p !== undefined),
+      );
     }
 
     // Verify locked rows & refreshed row remained active (cloning)

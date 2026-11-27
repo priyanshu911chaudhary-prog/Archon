@@ -13,6 +13,7 @@ import {
   GraphPublicationAbortedError,
   isPersistedReadyRepository,
   prepareGraphPersistencePlan,
+  resolvePublicationCounts,
   validateClaimIngestionAttemptInput,
   type AttachBullMqJobIdResult,
   type ClaimIngestionAttemptInput,
@@ -449,6 +450,7 @@ class InMemoryIngestionRepository implements IngestionRepository {
       return Promise.reject(new GraphPublicationAbortedError());
     }
     const plan = prepareGraphPersistencePlan(ownership.repoId, input.output, input.batchOptions);
+    const counts = resolvePublicationCounts(input.extractionStats, input.output);
     const verified = this.verifyOwnershipSync(ownership);
     if (verified.outcome !== 'verified') {
       return Promise.resolve({ ...verified, applied: false });
@@ -466,15 +468,8 @@ class InMemoryIngestionRepository implements IngestionRepository {
       ...verified.repository,
       status: 'ready',
       graphPersistedAt: now,
-      fileCount: Math.max(
-        verified.repository.fileCount,
-        input.output.stats.discoveredFilesCount,
-        plan.fileNodeCount,
-      ),
-      skippedFilesCount:
-        verified.repository.skippedFilesCount +
-        input.output.stats.skippedSyntaxErrorFilesCount +
-        input.output.stats.skippedOversizedFilesCount,
+      fileCount: counts.fileCount,
+      skippedFilesCount: counts.skippedFilesCount,
       updatedAt: now,
     };
     const startedAt = verified.job.startedAt ?? now;
