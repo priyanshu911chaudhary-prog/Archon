@@ -8,12 +8,16 @@ import {
   DEFAULT_STALE_JOB_THRESHOLD_MS,
   assertValidAttemptOwnership,
   computeExpiresAt,
+  isLegacyReadyRepository,
+  isPersistedReadyRepository,
   validateClaimIngestionAttemptInput,
   type AttachBullMqJobIdResult,
   type ClaimIngestionAttemptInput,
   type ClaimIngestionAttemptResult,
   type CreateOrGetActiveRepoInput,
   type CreateOrGetActiveRepoResult,
+  type CreateVerifiedEmptyRepoInput,
+  type DeleteExpiredRepositoriesOptions,
   type FailQueuedJobOnEnqueueErrorInput,
   type FailQueuedJobOnEnqueueErrorResult,
   type IngestionAttemptOwnership,
@@ -167,46 +171,76 @@ class InMemoryIngestionRepository implements IngestionRepository {
     return Promise.resolve({ repository, job });
   }
 
-  async createOrGetActive(input: CreateOrGetActiveRepoInput): Promise<CreateOrGetActiveRepoResult> {
-    const now = input.now ?? new Date();
-    const ttlDays = input.ttlDays ?? DEFAULT_REPO_TTL_DAYS;
-    const isSample = input.isSample ?? false;
-    const initialStatus = input.initialStatus ?? 'queued';
+  private async createOrGetInternal(params: {
+    readonly githubUrl: string;
+    readonly owner: string;
+    readonly name: string;
+    readonly defaultBranch: string;
+    readonly commitSha: string;
+    readonly sizeKb: number;
+    readonly fileCount: number;
+    readonly isSample: boolean;
+    readonly initialStatus: 'queued' | 'ready';
+    readonly verifiedEmptyGraph: boolean;
+    readonly ttlDays: number;
+    readonly now: Date;
+  }): Promise<CreateOrGetActiveRepoResult> {
+    const existing = await this.findActiveByOwnerNameSha(
+      params.owner,
+      params.name,
+      params.commitSha,
+    );
 
-    const existing = await this.findActiveByOwnerNameSha(input.owner, input.name, input.commitSha);
-    if (existing) {
-      if (existing.repository.status === 'ready' && !existing.repository.isSample) {
-        const bumped = await this.bumpRepositoryExpiry(existing.repository.id, { ttlDays, now });
-        if (bumped) {
-          return { created: false, repository: bumped, job: existing.job };
+    let supersededRepoId: string | undefined;
+    let effectiveIsSample =
+      params.isSample || this.hasRetainedSampleSync(params.owner, params.name, params.commitSha);
+
+    if (existing !== null) {
+      if (isLegacyReadyRepository(existing.repository)) {
+        this.repos.set(existing.repository.id, {
+          ...existing.repository,
+          status: 'superseded',
+          updatedAt: params.now,
+        });
+        supersededRepoId = existing.repository.id;
+        effectiveIsSample = existing.repository.isSample || params.isSample;
+      } else {
+        if (isPersistedReadyRepository(existing.repository) && !existing.repository.isSample) {
+          const bumped = await this.bumpRepositoryExpiry(existing.repository.id, {
+            ttlDays: params.ttlDays,
+            now: params.now,
+          });
+          if (bumped !== null) {
+            return { created: false, repository: bumped, job: existing.job };
+          }
         }
+        return { created: false, repository: existing.repository, job: existing.job };
       }
-      return { created: false, repository: existing.repository, job: existing.job };
     }
 
     const repoId = randomUUID();
     const jobId = randomUUID();
-    const isImmediateReady = initialStatus === 'ready';
+    const isImmediateReady = params.verifiedEmptyGraph || params.initialStatus === 'ready';
 
     const repository: RepositoryRecord = {
-      graphPersistedAt: null,
+      graphPersistedAt: params.verifiedEmptyGraph ? params.now : null,
       id: repoId,
-      githubUrl: input.githubUrl,
-      owner: input.owner.toLowerCase(),
-      name: input.name.toLowerCase(),
-      defaultBranch: input.defaultBranch,
-      commitSha: input.commitSha,
-      status: initialStatus,
+      githubUrl: params.githubUrl,
+      owner: params.owner.toLowerCase(),
+      name: params.name.toLowerCase(),
+      defaultBranch: params.defaultBranch,
+      commitSha: params.commitSha,
+      status: isImmediateReady ? 'ready' : 'queued',
       embeddingStatus: 'pending',
-      isSample,
-      fileCount: input.fileCount ?? 0,
+      isSample: effectiveIsSample,
+      fileCount: params.verifiedEmptyGraph ? 0 : params.fileCount,
       skippedFilesCount: 0,
-      sizeKb: input.sizeKb,
+      sizeKb: params.sizeKb,
       errorCode: null,
       errorMessage: null,
-      expiresAt: computeExpiresAt(now, ttlDays, isSample),
-      createdAt: now,
-      updatedAt: now,
+      expiresAt: computeExpiresAt(params.now, params.ttlDays, effectiveIsSample),
+      createdAt: params.now,
+      updatedAt: params.now,
     };
 
     const job: IngestionJobRecord = {
@@ -214,20 +248,60 @@ class InMemoryIngestionRepository implements IngestionRepository {
       id: jobId,
       repoId,
       bullmqJobId: null,
-      stage: initialStatus,
+      stage: isImmediateReady ? 'ready' : 'queued',
       progressPct: isImmediateReady ? 100 : 0,
-      startedAt: isImmediateReady ? now : null,
-      finishedAt: isImmediateReady ? now : null,
+      startedAt: isImmediateReady ? params.now : null,
+      finishedAt: isImmediateReady ? params.now : null,
       durationMs: isImmediateReady ? 0 : null,
       errorDetail: null,
-      createdAt: now,
+      createdAt: params.now,
     };
 
     this.repos.set(repoId, repository);
     this.jobs.set(jobId, job);
-    return { created: true, repository, job };
+    return {
+      created: true,
+      ...(supersededRepoId !== undefined ? { supersededRepoId } : {}),
+      repository,
+      job,
+    };
   }
 
+  createOrGetActive(input: CreateOrGetActiveRepoInput): Promise<CreateOrGetActiveRepoResult> {
+    return this.createOrGetInternal({
+      githubUrl: input.githubUrl,
+      owner: input.owner,
+      name: input.name,
+      defaultBranch: input.defaultBranch,
+      commitSha: input.commitSha,
+      sizeKb: input.sizeKb,
+      fileCount: input.fileCount ?? 0,
+      isSample: input.isSample ?? false,
+      initialStatus: input.initialStatus ?? 'queued',
+      verifiedEmptyGraph: false,
+      ttlDays: input.ttlDays ?? DEFAULT_REPO_TTL_DAYS,
+      now: input.now ?? new Date(),
+    });
+  }
+
+  createOrGetVerifiedEmpty(
+    input: CreateVerifiedEmptyRepoInput,
+  ): Promise<CreateOrGetActiveRepoResult> {
+    return this.createOrGetInternal({
+      githubUrl: input.githubUrl,
+      owner: input.owner,
+      name: input.name,
+      defaultBranch: input.defaultBranch,
+      commitSha: input.commitSha,
+      sizeKb: input.sizeKb,
+      fileCount: 0,
+      isSample: input.isSample ?? false,
+      initialStatus: 'ready',
+      verifiedEmptyGraph: true,
+      ttlDays: input.ttlDays ?? DEFAULT_REPO_TTL_DAYS,
+      now: input.now ?? new Date(),
+    });
+  }
   private verifyOwnershipSync(
     ownership: IngestionAttemptOwnership,
   ): VerifiedAttemptOwnershipResult {
@@ -484,7 +558,7 @@ class InMemoryIngestionRepository implements IngestionRepository {
     options: { readonly ttlDays?: number; readonly now?: Date } = {},
   ): Promise<RepositoryRecord | null> {
     const repo = this.repos.get(repoId);
-    if (repo?.status !== 'ready' || repo.isSample) {
+    if (repo === undefined || !isPersistedReadyRepository(repo) || repo.isSample) {
       return Promise.resolve(null);
     }
     const now = options.now ?? new Date();
@@ -498,7 +572,6 @@ class InMemoryIngestionRepository implements IngestionRepository {
     this.expiryBumpCount += 1;
     return Promise.resolve(updated);
   }
-
   sweepStaleJobs(input: SweepStaleJobsInput = {}): Promise<SweepStaleJobsResult> {
     const thresholdMs = input.staleThresholdMs ?? DEFAULT_STALE_JOB_THRESHOLD_MS;
     const now = input.now ?? new Date();
@@ -539,15 +612,38 @@ class InMemoryIngestionRepository implements IngestionRepository {
     });
   }
 
-  deleteExpiredRepositories(now: Date = new Date()): Promise<readonly string[]> {
+  deleteExpiredRepositories(
+    now: Date = new Date(),
+    _options?: DeleteExpiredRepositoriesOptions,
+  ): Promise<readonly string[]> {
     const deleted: string[] = [];
     for (const [id, repo] of this.repos.entries()) {
-      if (!repo.isSample && repo.expiresAt !== null && repo.expiresAt.getTime() < now.getTime()) {
+      if (
+        !repo.isSample &&
+        isTerminalRepo(repo.status) &&
+        repo.expiresAt !== null &&
+        repo.expiresAt.getTime() < now.getTime()
+      ) {
         this.repos.delete(id);
         deleted.push(id);
       }
     }
     return Promise.resolve(deleted);
+  }
+  private hasRetainedSampleSync(owner: string, name: string, commitSha: string): boolean {
+    const lowOwner = owner.toLowerCase();
+    const lowName = name.toLowerCase();
+    for (const repo of this.repos.values()) {
+      if (
+        repo.owner === lowOwner &&
+        repo.name === lowName &&
+        repo.commitSha === commitSha &&
+        repo.isSample
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private findLatestJobSync(repoId: string): IngestionJobRecord | null {
@@ -1366,5 +1462,251 @@ describe('Archon Fastify API (app.inject route tests)', () => {
     ).toBe(true);
     expect(serializedLogs).toContain('connection_error');
     expect(serializedLogs).toContain('QUEUE_ENQUEUE_FAILED');
+  });
+
+  it('recovers a legacy-ready repository without early reuse, enqueues replacement, reports superseded historical jobs accurately, and reuses persisted-ready repos', async () => {
+    const t0 = new Date('2026-11-27T10:00:00.000Z');
+    const t1 = new Date('2026-11-27T10:05:00.000Z');
+    let clock = t0;
+
+    const repository = new InMemoryIngestionRepository();
+    const legacy = await repository.createOrGetActive({
+      githubUrl: 'https://github.com/pmndrs/zustand',
+      owner: 'pmndrs',
+      name: 'zustand',
+      defaultBranch: 'main',
+      commitSha: ZUSTAND_SHA,
+      sizeKb: 8253,
+      fileCount: 49,
+      initialStatus: 'ready',
+      now: t0,
+    });
+    expect(isLegacyReadyRepository(legacy.repository)).toBe(true);
+
+    let precheckTreeChecks = 0;
+    const basePrecheck = makeFakePrecheck({ supportedFileCount: 49 });
+    const countingPrecheck: Pick<GitHubPrecheckClient, 'precheckRepository'> = {
+      async precheckRepository(parsedUrl, opts) {
+        const res = await basePrecheck.precheckRepository(parsedUrl, opts);
+        if (res.treeChecked) {
+          precheckTreeChecks += 1;
+        }
+        return res;
+      },
+    };
+
+    const { app, enqueuedPayloads } = await createTestApp({
+      repository,
+      githubPrecheck: countingPrecheck,
+      now: () => clock,
+    });
+
+    // 1. Legacy-ready MUST NOT be early-reused -> tree check runs, legacy is superseded, replacement is enqueued
+    clock = t1;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(res.statusCode).toBe(202);
+    const body = parseJsonBody(res.body, repoCreateBodySchema);
+    expect(body.reused).toBe(false);
+    expect(body.status).toBe('queued');
+    expect(body.repoId).not.toBe(legacy.repository.id);
+    expect(body.jobId).not.toBe(legacy.job.id);
+    expect(precheckTreeChecks).toBe(1);
+    expect(enqueuedPayloads).toHaveLength(1);
+    expect(enqueuedPayloads[0]?.jobId).toBe(body.jobId);
+
+    // 2. Historical job lookup MUST report status: 'superseded' (not 'ready') and emptyJsTs: false
+    const histPoll = await app.inject({
+      method: 'GET',
+      url: `/api/v1/jobs/${legacy.job.id}`,
+    });
+    expect(histPoll.statusCode).toBe(200);
+    const histBody = parseJsonBody(histPoll.body, jobStatusBodySchema);
+    expect(histBody.status).toBe('superseded');
+    expect(histBody.stats.emptyJsTs).toBe(false);
+
+    // 3. Mark replacement as persisted-ready -> subsequent POST reuses early without tree check or enqueue
+    const replacement = repository.repos.get(body.repoId);
+    if (replacement === undefined) {
+      throw new Error('Expected replacement repository');
+    }
+    repository.repos.set(body.repoId, {
+      ...replacement,
+      status: 'ready',
+      graphPersistedAt: t1,
+    });
+
+    const reuseRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(reuseRes.statusCode).toBe(200);
+    const reuseBody = parseJsonBody(reuseRes.body, repoCreateBodySchema);
+    expect(reuseBody.reused).toBe(true);
+    expect(reuseBody.repoId).toBe(body.repoId);
+    expect(precheckTreeChecks).toBe(1);
+    expect(enqueuedPayloads).toHaveLength(1);
+    expect(repository.expiryBumpCount).toBe(1);
+  });
+
+  it('falls back cleanly when a matched ready repo expires before bumpRepositoryExpiry and supports replacement enqueue failure retry', async () => {
+    const t0 = new Date('2026-11-27T10:00:00.000Z');
+    class ExpireOnBumpRepository extends InMemoryIngestionRepository {
+      expiredOnce = false;
+      override bumpRepositoryExpiry(
+        repoId: string,
+        options?: { readonly ttlDays?: number; readonly now?: Date },
+      ): Promise<RepositoryRecord | null> {
+        if (!this.expiredOnce) {
+          this.expiredOnce = true;
+          this.repos.delete(repoId);
+          return Promise.resolve(null);
+        }
+        return super.bumpRepositoryExpiry(repoId, options);
+      }
+    }
+
+    const repository = new ExpireOnBumpRepository();
+    const initial = await repository.createOrGetVerifiedEmpty({
+      githubUrl: 'https://github.com/pmndrs/zustand',
+      owner: 'pmndrs',
+      name: 'zustand',
+      defaultBranch: 'main',
+      commitSha: ZUSTAND_SHA,
+      sizeKb: 100,
+      now: t0,
+    });
+
+    const { app, enqueuedPayloads } = await createTestApp({
+      repository,
+      githubPrecheck: makeFakePrecheck({ supportedFileCount: 12 }),
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(res.statusCode).toBe(202);
+    const body = parseJsonBody(res.body, repoCreateBodySchema);
+    expect(body.reused).toBe(false);
+    expect(body.repoId).not.toBe(initial.repository.id);
+    expect(enqueuedPayloads).toHaveLength(1);
+
+    // Replacement enqueue failure leaves superseded legacy row intact and allows retry
+    const retryRepo = new InMemoryIngestionRepository();
+    const legacyRow = await retryRepo.createOrGetActive({
+      githubUrl: 'https://github.com/pmndrs/zustand',
+      owner: 'pmndrs',
+      name: 'zustand',
+      defaultBranch: 'main',
+      commitSha: ZUSTAND_SHA,
+      sizeKb: 100,
+      fileCount: 10,
+      initialStatus: 'ready',
+      now: t0,
+    });
+    let enqueueAttempts = 0;
+    const { app: retryApp } = await createTestApp({
+      repository: retryRepo,
+      enqueuer: {
+        enqueue(payload) {
+          enqueueAttempts += 1;
+          if (enqueueAttempts === 1) {
+            return Promise.reject(new Error('transient redis down'));
+          }
+          return Promise.resolve({ bullmqJobId: payload.jobId });
+        },
+      },
+    });
+
+    const failRes = await retryApp.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(failRes.statusCode).toBe(503);
+    expect(retryRepo.repos.get(legacyRow.repository.id)?.status).toBe('superseded');
+
+    const okRetryRes = await retryApp.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(okRetryRes.statusCode).toBe(202);
+    const okRetryBody = parseJsonBody(okRetryRes.body, repoCreateBodySchema);
+    expect(okRetryBody.status).toBe('queued');
+    expect(okRetryBody.reused).toBe(false);
+  });
+
+  it('preserves isSample and null expiresAt on public retries after a recovered sample repository fails', async () => {
+    const t0 = new Date('2026-11-27T11:00:00.000Z');
+    const repository = new InMemoryIngestionRepository();
+
+    const legacySample = await repository.createOrGetActive({
+      githubUrl: 'https://github.com/pmndrs/zustand',
+      owner: 'pmndrs',
+      name: 'zustand',
+      defaultBranch: 'main',
+      commitSha: ZUSTAND_SHA,
+      sizeKb: 8253,
+      fileCount: 49,
+      isSample: true,
+      initialStatus: 'ready',
+      now: t0,
+    });
+    expect(legacySample.repository.isSample).toBe(true);
+    expect(legacySample.repository.expiresAt).toBeNull();
+
+    let enqueueCalls = 0;
+    const { app } = await createTestApp({
+      repository,
+      enqueuer: {
+        enqueue(payload) {
+          enqueueCalls += 1;
+          if (enqueueCalls === 1) {
+            return Promise.reject(new Error('transient redis failure on first recovery'));
+          }
+          return Promise.resolve({ bullmqJobId: payload.jobId });
+        },
+      },
+    });
+
+    // 1. First public POST triggers legacy sample recovery, then fails enqueueing -> 503
+    const firstRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(firstRes.statusCode).toBe(503);
+    expect(repository.repos.get(legacySample.repository.id)?.status).toBe('superseded');
+
+    const failedRecovery = [...repository.repos.values()].find(
+      (r) => r.id !== legacySample.repository.id,
+    );
+    expect(failedRecovery?.status).toBe('failed');
+    expect(failedRecovery?.isSample).toBe(true);
+    expect(failedRecovery?.expiresAt).toBeNull();
+
+    // 2. Subsequent public retry (without isSample flag) MUST still preserve isSample=true and expiresAt=null
+    const retryRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(retryRes.statusCode).toBe(202);
+    const retryBody = parseJsonBody(retryRes.body, repoCreateBodySchema);
+    expect(retryBody.status).toBe('queued');
+    expect(retryBody.reused).toBe(false);
+    expect(retryBody.repoId).not.toBe(legacySample.repository.id);
+    expect(retryBody.repoId).not.toBe(failedRecovery?.id);
+
+    const retriedRecord = repository.repos.get(retryBody.repoId);
+    expect(retriedRecord?.isSample).toBe(true);
+    expect(retriedRecord?.expiresAt).toBeNull();
   });
 });

@@ -1,4 +1,16 @@
-import { and, asc, desc, eq, gt, inArray, isNull, lt, notInArray, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  notInArray,
+  sql,
+} from 'drizzle-orm';
 import type { ArchonDatabase } from './client.js';
 import { DbError, classifyDbError, extractPgErrorInfo, isPgUniqueViolation } from './errors.js';
 import {
@@ -60,8 +72,27 @@ export interface CreateOrGetActiveRepoInput {
   readonly now?: Date;
 }
 
+export interface CreateVerifiedEmptyRepoInput {
+  readonly githubUrl: string;
+  readonly owner: string;
+  readonly name: string;
+  readonly defaultBranch: string;
+  readonly commitSha: string;
+  readonly sizeKb: number;
+  readonly isSample?: boolean;
+  readonly ttlDays?: number;
+  readonly now?: Date;
+}
+
 export interface CreateOrGetActiveRepoResult extends RepositoryWithJob {
   readonly created: boolean;
+  readonly supersededRepoId?: string;
+}
+
+export interface DeleteExpiredRepositoriesOptions {
+  readonly batchSize?: number;
+  readonly maxBatches?: number;
+  readonly maxDurationMs?: number;
 }
 
 export interface IngestionAttemptOwnership {
@@ -331,6 +362,9 @@ export interface IngestionRepository {
   ): Promise<RepositoryWithJob | null>;
   findJobWithRepository(jobId: string): Promise<RepositoryWithJob | null>;
   createOrGetActive(input: CreateOrGetActiveRepoInput): Promise<CreateOrGetActiveRepoResult>;
+  createOrGetVerifiedEmpty(
+    input: CreateVerifiedEmptyRepoInput,
+  ): Promise<CreateOrGetActiveRepoResult>;
   claimIngestionAttempt(input: ClaimIngestionAttemptInput): Promise<ClaimIngestionAttemptResult>;
   transitionJobStage(
     ownership: IngestionAttemptOwnership,
@@ -349,7 +383,10 @@ export interface IngestionRepository {
     options?: { readonly ttlDays?: number; readonly now?: Date },
   ): Promise<RepositoryRecord | null>;
   sweepStaleJobs(input?: SweepStaleJobsInput): Promise<SweepStaleJobsResult>;
-  deleteExpiredRepositories(now?: Date): Promise<readonly string[]>;
+  deleteExpiredRepositories(
+    now?: Date,
+    options?: DeleteExpiredRepositoriesOptions,
+  ): Promise<readonly string[]>;
 }
 
 export function isValidAttemptGeneration(generation: number): boolean {
@@ -590,6 +627,18 @@ function isTerminalRepositoryStatus(status: RepositoryStatus): boolean {
   return status === 'ready' || status === 'failed' || status === 'superseded';
 }
 
+export function isLegacyReadyRepository(
+  repo: Pick<RepositoryRecord, 'status' | 'graphPersistedAt'>,
+): boolean {
+  return repo.status === 'ready' && repo.graphPersistedAt === null;
+}
+
+export function isPersistedReadyRepository(
+  repo: Pick<RepositoryRecord, 'status' | 'graphPersistedAt'>,
+): boolean {
+  return repo.status === 'ready' && repo.graphPersistedAt !== null;
+}
+
 /**
  * Acquires repository-first row locks (`repositories -> ingestion_jobs`) and verifies
  * existence, commit SHA, BullMQ job binding, non-terminal status on both rows, and exact
@@ -690,42 +739,74 @@ export function createIngestionRepository(db: ArchonDatabase): IngestionReposito
     repoId: string,
     options: { readonly ttlDays?: number; readonly now?: Date } = {},
   ): Promise<RepositoryRecord | null> {
-    const now = validateExplicitDate(options.now) ?? new Date();
+    if (!UUID_RE.test(repoId)) {
+      return null;
+    }
+    const explicitNow = validateExplicitDate(options.now);
     const ttlDays = options.ttlDays ?? DEFAULT_REPO_TTL_DAYS;
-    const nextExpiresAt = computeExpiresAt(now, ttlDays, false);
+    if (!Number.isFinite(ttlDays) || ttlDays <= 0) {
+      throw new DbError(
+        'DB_VALIDATION_ERROR',
+        `ttlDays must be positive (received ${String(ttlDays)}).`,
+      );
+    }
 
-    const updated = await db
-      .update(repositories)
-      .set({
-        expiresAt: nextExpiresAt,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(repositories.id, repoId),
-          eq(repositories.status, 'ready'),
-          eq(repositories.isSample, false),
-        ),
-      )
-      .returning();
+    return runBoundedTransaction(db, async (tx): Promise<RepositoryRecord | null> => {
+      const locked = await tx
+        .select()
+        .from(repositories)
+        .where(eq(repositories.id, repoId))
+        .limit(1)
+        .for('update');
 
-    return updated[0] ?? null;
+      const repo = locked[0];
+      if (repo === undefined || !isPersistedReadyRepository(repo) || repo.isSample) {
+        return null;
+      }
+
+      const bumpTime = explicitNow ?? new Date();
+      const nextExpiresAt = computeExpiresAt(bumpTime, ttlDays, false);
+      const updated = await tx
+        .update(repositories)
+        .set({
+          expiresAt: nextExpiresAt,
+          updatedAt: bumpTime,
+        })
+        .where(
+          and(
+            eq(repositories.id, repoId),
+            eq(repositories.status, 'ready'),
+            isNotNull(repositories.graphPersistedAt),
+            eq(repositories.isSample, false),
+          ),
+        )
+        .returning();
+
+      return updated[0] ?? null;
+    });
   }
 
-  async function reuseExistingIfReady(
+  async function tryReuseNonLegacyActive(
     existing: RepositoryWithJob,
     ttlDays: number,
-    now: Date,
-  ): Promise<CreateOrGetActiveRepoResult> {
-    if (existing.repository.status === 'ready' && !existing.repository.isSample) {
-      const bumped = await bumpRepositoryExpiry(existing.repository.id, { ttlDays, now });
-      if (bumped) {
-        return {
-          created: false,
-          repository: bumped,
-          job: existing.job,
-        };
+    explicitNow: Date | undefined,
+  ): Promise<CreateOrGetActiveRepoResult | null> {
+    if (isLegacyReadyRepository(existing.repository)) {
+      return null;
+    }
+    if (isPersistedReadyRepository(existing.repository) && !existing.repository.isSample) {
+      const bumped = await bumpRepositoryExpiry(existing.repository.id, {
+        ttlDays,
+        ...(explicitNow !== undefined ? { now: explicitNow } : {}),
+      });
+      if (bumped === null) {
+        return null;
       }
+      return {
+        created: false,
+        repository: bumped,
+        job: existing.job,
+      };
     }
 
     return {
@@ -735,107 +816,328 @@ export function createIngestionRepository(db: ArchonDatabase): IngestionReposito
     };
   }
 
+  async function hasRetainedSampleRecord(
+    tx: ArchonTransaction,
+    normalizedOwner: string,
+    normalizedName: string,
+    commitSha: string,
+  ): Promise<boolean> {
+    const rows = await tx
+      .select({ id: repositories.id })
+      .from(repositories)
+      .where(
+        and(
+          eq(repositories.owner, normalizedOwner),
+          eq(repositories.name, normalizedName),
+          eq(repositories.commitSha, commitSha),
+          eq(repositories.isSample, true),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  async function recoverLegacyReadyById(
+    legacyRepoId: string,
+    params: {
+      readonly githubUrl: string;
+      readonly normalizedOwner: string;
+      readonly normalizedName: string;
+      readonly defaultBranch: string;
+      readonly commitSha: string;
+      readonly sizeKb: number;
+      readonly fileCount: number;
+      readonly isSample: boolean;
+      readonly verifiedEmptyGraph: boolean;
+      readonly ttlDays: number;
+      readonly explicitNow: Date | undefined;
+    },
+  ): Promise<
+    | { readonly kind: 'recovered'; readonly result: CreateOrGetActiveRepoResult }
+    | { readonly kind: 'retry_lookup' }
+  > {
+    return runBoundedTransaction(db, async (tx) => {
+      const lockedRows = await tx
+        .select()
+        .from(repositories)
+        .where(eq(repositories.id, legacyRepoId))
+        .limit(1)
+        .for('update');
+
+      const lockedRepo = lockedRows[0];
+      if (lockedRepo === undefined || !isLegacyReadyRepository(lockedRepo)) {
+        return { kind: 'retry_lookup' as const };
+      }
+
+      const recoveryTime = params.explicitNow ?? new Date();
+      const supersededRows = await tx
+        .update(repositories)
+        .set({
+          status: 'superseded',
+          updatedAt: recoveryTime,
+        })
+        .where(
+          and(
+            eq(repositories.id, legacyRepoId),
+            eq(repositories.status, 'ready'),
+            isNull(repositories.graphPersistedAt),
+          ),
+        )
+        .returning({ id: repositories.id });
+
+      if (supersededRows[0] === undefined) {
+        return { kind: 'retry_lookup' as const };
+      }
+
+      const effectiveIsSample =
+        lockedRepo.isSample ||
+        params.isSample ||
+        (await hasRetainedSampleRecord(
+          tx,
+          params.normalizedOwner,
+          params.normalizedName,
+          params.commitSha,
+        ));
+      const effectiveExpiresAt = computeExpiresAt(recoveryTime, params.ttlDays, effectiveIsSample);
+      const nextStatus: 'queued' | 'ready' = params.verifiedEmptyGraph ? 'ready' : 'queued';
+      const nextGraphPersistedAt = params.verifiedEmptyGraph ? recoveryTime : null;
+
+      const insertedRepos = await tx
+        .insert(repositories)
+        .values({
+          githubUrl: params.githubUrl,
+          owner: params.normalizedOwner,
+          name: params.normalizedName,
+          defaultBranch: params.defaultBranch,
+          commitSha: params.commitSha,
+          status: nextStatus,
+          isSample: effectiveIsSample,
+          fileCount: params.verifiedEmptyGraph ? 0 : params.fileCount,
+          skippedFilesCount: 0,
+          sizeKb: params.sizeKb,
+          graphPersistedAt: nextGraphPersistedAt,
+          expiresAt: effectiveExpiresAt,
+          createdAt: recoveryTime,
+          updatedAt: recoveryTime,
+        })
+        .returning();
+
+      const replacementRepo = insertedRepos[0];
+      if (replacementRepo === undefined) {
+        throw new DbError('DB_QUERY_ERROR', 'Insert of replacement repository returned no row.');
+      }
+
+      const insertedJobs = await tx
+        .insert(ingestionJobs)
+        .values({
+          repoId: replacementRepo.id,
+          stage: nextStatus,
+          progressPct: params.verifiedEmptyGraph ? 100 : 0,
+          startedAt: params.verifiedEmptyGraph ? recoveryTime : null,
+          finishedAt: params.verifiedEmptyGraph ? recoveryTime : null,
+          durationMs: params.verifiedEmptyGraph ? 0 : null,
+          createdAt: recoveryTime,
+        })
+        .returning();
+
+      const replacementJob = insertedJobs[0];
+      if (replacementJob === undefined) {
+        throw new DbError('DB_QUERY_ERROR', 'Insert of replacement ingestion job returned no row.');
+      }
+
+      return {
+        kind: 'recovered' as const,
+        result: {
+          created: true,
+          supersededRepoId: legacyRepoId,
+          repository: replacementRepo,
+          job: replacementJob,
+        },
+      };
+    });
+  }
+
+  async function createOrGetInternal(params: {
+    readonly githubUrl: string;
+    readonly owner: string;
+    readonly name: string;
+    readonly defaultBranch: string;
+    readonly commitSha: string;
+    readonly sizeKb: number;
+    readonly fileCount: number;
+    readonly isSample: boolean;
+    readonly initialStatus: 'queued' | 'ready';
+    readonly verifiedEmptyGraph: boolean;
+    readonly ttlDays: number;
+    readonly explicitNow: Date | undefined;
+  }): Promise<CreateOrGetActiveRepoResult> {
+    assertNonNegativePgInt32('sizeKb', params.sizeKb);
+    assertNonNegativePgInt32('fileCount', params.fileCount);
+    const normalizedOwner = params.owner.toLowerCase();
+    const normalizedName = params.name.toLowerCase();
+    // Validate ttlDays eagerly before touching the database
+    computeExpiresAt(params.explicitNow ?? new Date(), params.ttlDays, params.isSample);
+
+    const maxAttempts = 4;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const existing = await findActiveByOwnerNameSha(
+        normalizedOwner,
+        normalizedName,
+        params.commitSha,
+      );
+
+      if (existing !== null) {
+        if (isLegacyReadyRepository(existing.repository)) {
+          const recovery = await recoverLegacyReadyById(existing.repository.id, {
+            githubUrl: params.githubUrl,
+            normalizedOwner,
+            normalizedName,
+            defaultBranch: params.defaultBranch,
+            commitSha: params.commitSha,
+            sizeKb: params.sizeKb,
+            fileCount: params.fileCount,
+            isSample: params.isSample,
+            verifiedEmptyGraph: params.verifiedEmptyGraph,
+            ttlDays: params.ttlDays,
+            explicitNow: params.explicitNow,
+          });
+          if (recovery.kind === 'recovered') {
+            return recovery.result;
+          }
+          continue;
+        }
+
+        const reused = await tryReuseNonLegacyActive(existing, params.ttlDays, params.explicitNow);
+        if (reused !== null) {
+          return reused;
+        }
+        continue;
+      }
+
+      try {
+        const createdPair = await runBoundedTransaction(db, async (tx) => {
+          const createTime = params.explicitNow ?? new Date();
+          const effectiveIsSample =
+            params.isSample ||
+            (await hasRetainedSampleRecord(tx, normalizedOwner, normalizedName, params.commitSha));
+          const expiresAt = computeExpiresAt(createTime, params.ttlDays, effectiveIsSample);
+          const isImmediateReady = params.verifiedEmptyGraph || params.initialStatus === 'ready';
+          const graphPersistedAt = params.verifiedEmptyGraph ? createTime : null;
+
+          const insertedRepos = await tx
+            .insert(repositories)
+            .values({
+              githubUrl: params.githubUrl,
+              owner: normalizedOwner,
+              name: normalizedName,
+              defaultBranch: params.defaultBranch,
+              commitSha: params.commitSha,
+              status: isImmediateReady ? 'ready' : 'queued',
+              isSample: effectiveIsSample,
+              fileCount: params.verifiedEmptyGraph ? 0 : params.fileCount,
+              skippedFilesCount: 0,
+              sizeKb: params.sizeKb,
+              graphPersistedAt,
+              expiresAt,
+              createdAt: createTime,
+              updatedAt: createTime,
+            })
+            .returning();
+
+          const repository = insertedRepos[0];
+          if (repository === undefined) {
+            throw new DbError('DB_QUERY_ERROR', 'Insert into repositories returned no row.');
+          }
+
+          const insertedJobs = await tx
+            .insert(ingestionJobs)
+            .values({
+              repoId: repository.id,
+              stage: isImmediateReady ? 'ready' : 'queued',
+              progressPct: isImmediateReady ? 100 : 0,
+              startedAt: isImmediateReady ? createTime : null,
+              finishedAt: isImmediateReady ? createTime : null,
+              durationMs: isImmediateReady ? 0 : null,
+              createdAt: createTime,
+            })
+            .returning();
+
+          const job = insertedJobs[0];
+          if (job === undefined) {
+            throw new DbError('DB_QUERY_ERROR', 'Insert into ingestion_jobs returned no row.');
+          }
+
+          return { repository, job };
+        });
+
+        return {
+          created: true,
+          repository: createdPair.repository,
+          job: createdPair.job,
+        };
+      } catch (err) {
+        if (isPgUniqueViolation(err, ACTIVE_REPO_UNIQUE_INDEX)) {
+          if (attempt + 1 < maxAttempts) {
+            continue;
+          }
+          throw new DbError(
+            'DB_CONFLICT_UNRESOLVED',
+            'Active repository conflict occurred, but no active row could be resolved.',
+            { cause: err, pgCode: '23505' },
+          );
+        }
+
+        const pgInfo = extractPgErrorInfo(err);
+        throw new DbError('DB_QUERY_ERROR', 'Failed to create repository ingestion record.', {
+          cause: err,
+          pgCode: pgInfo.code,
+        });
+      }
+    }
+
+    throw new DbError(
+      'DB_CONFLICT_UNRESOLVED',
+      'Active repository state changed repeatedly without converging.',
+    );
+  }
+
   async function createOrGetActive(
     input: CreateOrGetActiveRepoInput,
   ): Promise<CreateOrGetActiveRepoResult> {
-    assertNonNegativePgInt32('sizeKb', input.sizeKb);
-    assertNonNegativePgInt32('fileCount', input.fileCount);
-    const now = validateExplicitDate(input.now) ?? new Date();
-    const ttlDays = input.ttlDays ?? DEFAULT_REPO_TTL_DAYS;
-    const isSample = input.isSample ?? false;
-    const initialStatus = input.initialStatus ?? 'queued';
-    const normalizedOwner = input.owner.toLowerCase();
-    const normalizedName = input.name.toLowerCase();
-    const expiresAt = computeExpiresAt(now, ttlDays, isSample);
-
-    // Fast path: reuse an already active or ready snapshot
-    const existing = await findActiveByOwnerNameSha(
-      normalizedOwner,
-      normalizedName,
-      input.commitSha,
-    );
-    if (existing) {
-      return reuseExistingIfReady(existing, ttlDays, now);
-    }
-
-    try {
-      const createdPair = await db.transaction(async (tx) => {
-        const insertedRepos = await tx
-          .insert(repositories)
-          .values({
-            githubUrl: input.githubUrl,
-            owner: normalizedOwner,
-            name: normalizedName,
-            defaultBranch: input.defaultBranch,
-            commitSha: input.commitSha,
-            status: initialStatus,
-            isSample,
-            fileCount: input.fileCount ?? 0,
-            skippedFilesCount: 0,
-            sizeKb: input.sizeKb,
-            expiresAt,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returning();
-
-        const repository = insertedRepos[0];
-        if (!repository) {
-          throw new DbError('DB_QUERY_ERROR', 'Insert into repositories returned no row.');
-        }
-
-        const isImmediateReady = initialStatus === 'ready';
-        const insertedJobs = await tx
-          .insert(ingestionJobs)
-          .values({
-            repoId: repository.id,
-            stage: initialStatus,
-            progressPct: isImmediateReady ? 100 : 0,
-            startedAt: isImmediateReady ? now : null,
-            finishedAt: isImmediateReady ? now : null,
-            durationMs: isImmediateReady ? 0 : null,
-            createdAt: now,
-          })
-          .returning();
-
-        const job = insertedJobs[0];
-        if (!job) {
-          throw new DbError('DB_QUERY_ERROR', 'Insert into ingestion_jobs returned no row.');
-        }
-
-        return { repository, job };
-      });
-
-      return {
-        created: true,
-        repository: createdPair.repository,
-        job: createdPair.job,
-      };
-    } catch (err) {
-      if (isPgUniqueViolation(err, ACTIVE_REPO_UNIQUE_INDEX)) {
-        const winner = await findActiveByOwnerNameSha(
-          normalizedOwner,
-          normalizedName,
-          input.commitSha,
-        );
-        if (winner) {
-          return reuseExistingIfReady(winner, ttlDays, now);
-        }
-        throw new DbError(
-          'DB_CONFLICT_UNRESOLVED',
-          'Active repository conflict occurred, but no active row could be loaded.',
-          { cause: err, pgCode: '23505' },
-        );
-      }
-
-      const pgInfo = extractPgErrorInfo(err);
-      throw new DbError('DB_QUERY_ERROR', 'Failed to create repository ingestion record.', {
-        cause: err,
-        pgCode: pgInfo.code,
-      });
-    }
+    return createOrGetInternal({
+      githubUrl: input.githubUrl,
+      owner: input.owner,
+      name: input.name,
+      defaultBranch: input.defaultBranch,
+      commitSha: input.commitSha,
+      sizeKb: input.sizeKb,
+      fileCount: input.fileCount ?? 0,
+      isSample: input.isSample ?? false,
+      initialStatus: input.initialStatus ?? 'queued',
+      verifiedEmptyGraph: false,
+      ttlDays: input.ttlDays ?? DEFAULT_REPO_TTL_DAYS,
+      explicitNow: validateExplicitDate(input.now),
+    });
   }
 
+  async function createOrGetVerifiedEmpty(
+    input: CreateVerifiedEmptyRepoInput,
+  ): Promise<CreateOrGetActiveRepoResult> {
+    return createOrGetInternal({
+      githubUrl: input.githubUrl,
+      owner: input.owner,
+      name: input.name,
+      defaultBranch: input.defaultBranch,
+      commitSha: input.commitSha,
+      sizeKb: input.sizeKb,
+      fileCount: 0,
+      isSample: input.isSample ?? false,
+      initialStatus: 'ready',
+      verifiedEmptyGraph: true,
+      ttlDays: input.ttlDays ?? DEFAULT_REPO_TTL_DAYS,
+      explicitNow: validateExplicitDate(input.now),
+    });
+  }
   async function findJobWithRepository(jobId: string): Promise<RepositoryWithJob | null> {
     const rows = await db
       .select({
@@ -1462,20 +1764,109 @@ export function createIngestionRepository(db: ArchonDatabase): IngestionReposito
     };
   }
 
-  async function deleteExpiredRepositories(now?: Date): Promise<readonly string[]> {
-    const cutoff = validateExplicitDate(now) ?? new Date();
-    const deleted = await db
-      .delete(repositories)
-      .where(and(eq(repositories.isSample, false), lt(repositories.expiresAt, cutoff)))
-      .returning({ id: repositories.id });
+  async function deleteExpiredRepositories(
+    now?: Date,
+    options: DeleteExpiredRepositoriesOptions = {},
+  ): Promise<readonly string[]> {
+    const explicitNow = validateExplicitDate(now);
+    const batchSize = options.batchSize ?? DEFAULT_SWEEP_BATCH_SIZE;
+    const maxBatches = options.maxBatches ?? DEFAULT_SWEEP_MAX_BATCHES;
+    const maxDurationMs = options.maxDurationMs ?? DEFAULT_SWEEP_MAX_DURATION_MS;
+    assertBoundedInt('batchSize', batchSize, 1, MAX_SWEEP_BATCH_SIZE);
+    assertBoundedInt('maxBatches', maxBatches, 1, MAX_SWEEP_MAX_BATCHES);
+    assertBoundedInt('maxDurationMs', maxDurationMs, 1, MAX_SWEEP_MAX_DURATION_MS);
 
-    return deleted.map((row) => row.id);
+    const startedMs = Date.now();
+    const deletedIds: string[] = [];
+    let batchesProcessed = 0;
+    let cursorRepoId: string | undefined;
+
+    while (batchesProcessed < maxBatches) {
+      if (batchesProcessed > 0 && Date.now() - startedMs >= maxDurationMs) {
+        break;
+      }
+
+      const batchOutcome = await runBoundedTransaction(db, async (tx) => {
+        const preCutoff = explicitNow ?? new Date();
+        const conditions = [
+          eq(repositories.isSample, false),
+          inArray(repositories.status, [...TERMINAL_REPOSITORY_STATUSES]),
+          isNotNull(repositories.expiresAt),
+          lt(repositories.expiresAt, preCutoff),
+        ];
+        if (cursorRepoId !== undefined) {
+          conditions.push(gt(repositories.id, cursorRepoId));
+        }
+
+        const lockedRepos = await tx
+          .select({
+            id: repositories.id,
+            status: repositories.status,
+            isSample: repositories.isSample,
+            expiresAt: repositories.expiresAt,
+          })
+          .from(repositories)
+          .where(and(...conditions))
+          .orderBy(asc(repositories.id))
+          .limit(batchSize)
+          .for('update', { skipLocked: true });
+
+        if (lockedRepos.length === 0) {
+          return { lockedCount: 0, lastRepoId: undefined, deleted: [] as string[] };
+        }
+
+        const postLockCutoff = explicitNow ?? new Date();
+        const eligibleIds = lockedRepos
+          .filter(
+            (repo) =>
+              !repo.isSample &&
+              isTerminalRepositoryStatus(repo.status) &&
+              repo.expiresAt !== null &&
+              repo.expiresAt.getTime() < postLockCutoff.getTime(),
+          )
+          .map((repo) => repo.id);
+
+        const lastRepoId = lockedRepos[lockedRepos.length - 1]?.id;
+        if (eligibleIds.length === 0) {
+          return { lockedCount: lockedRepos.length, lastRepoId, deleted: [] as string[] };
+        }
+
+        const deletedRows = await tx
+          .delete(repositories)
+          .where(
+            and(
+              inArray(repositories.id, eligibleIds),
+              eq(repositories.isSample, false),
+              inArray(repositories.status, [...TERMINAL_REPOSITORY_STATUSES]),
+              isNotNull(repositories.expiresAt),
+              lt(repositories.expiresAt, postLockCutoff),
+            ),
+          )
+          .returning({ id: repositories.id });
+
+        return {
+          lockedCount: lockedRepos.length,
+          lastRepoId,
+          deleted: deletedRows.map((row) => row.id),
+        };
+      });
+
+      batchesProcessed += 1;
+      deletedIds.push(...batchOutcome.deleted);
+
+      if (batchOutcome.lockedCount < batchSize || batchOutcome.lastRepoId === undefined) {
+        break;
+      }
+      cursorRepoId = batchOutcome.lastRepoId;
+    }
+
+    return deletedIds;
   }
-
   return {
     findActiveByOwnerNameSha,
     findJobWithRepository,
     createOrGetActive,
+    createOrGetVerifiedEmpty,
     claimIngestionAttempt,
     transitionJobStage,
     failQueuedJobOnEnqueueError,

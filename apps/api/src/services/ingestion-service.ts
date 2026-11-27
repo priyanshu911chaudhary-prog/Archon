@@ -2,6 +2,7 @@ import {
   DEFAULT_STALE_JOB_THRESHOLD_MS,
   classifyDbError,
   isEmptyJsTsRepository,
+  isLegacyReadyRepository,
   type IngestionRepository,
   type RepositoryStatus,
   type RepositoryWithJob,
@@ -111,7 +112,7 @@ export function createIngestionService(deps: IngestionServiceDependencies): Inge
     const now = explicitNow() ?? new Date();
 
     const early: { match: RepositoryWithJob | null } = { match: null };
-    const precheck = await deps.githubPrecheck.precheckRepository(parsedUrl, {
+    let precheck = await deps.githubPrecheck.precheckRepository(parsedUrl, {
       pinnedSha: input.pinnedSha,
       shouldSkipTreeCheck: async (head) => {
         const existing = await deps.repository.findActiveByOwnerNameSha(
@@ -119,7 +120,7 @@ export function createIngestionService(deps: IngestionServiceDependencies): Inge
           head.name,
           head.commitSha,
         );
-        if (existing) {
+        if (existing !== null && !isLegacyReadyRepository(existing.repository)) {
           early.match = existing;
           return true;
         }
@@ -131,40 +132,78 @@ export function createIngestionService(deps: IngestionServiceDependencies): Inge
 
     const matched = early.match;
     if (!precheck.treeChecked && matched !== null) {
-      if (matched.repository.status === 'ready' && !matched.repository.isSample) {
-        await deps.repository.bumpRepositoryExpiry(
+      if (matched.repository.status === 'ready') {
+        if (matched.repository.isSample) {
+          return {
+            httpStatus: 200,
+            body: {
+              repoId: matched.repository.id,
+              jobId: matched.job.id,
+              status: matched.repository.status,
+              reused: true,
+            },
+          };
+        }
+
+        const bumped = await deps.repository.bumpRepositoryExpiry(
           matched.repository.id,
           deps.now !== undefined ? { now } : {},
         );
-      }
+        if (bumped !== null) {
+          return {
+            httpStatus: 200,
+            body: {
+              repoId: bumped.id,
+              jobId: matched.job.id,
+              status: bumped.status,
+              reused: true,
+            },
+          };
+        }
 
-      return {
-        httpStatus: matched.repository.status === 'ready' ? 200 : 202,
-        body: {
-          repoId: matched.repository.id,
-          jobId: matched.job.id,
-          status: matched.repository.status,
-          reused: true,
-        },
-      };
+        // Matched ready snapshot expired concurrently before expiry bump; re-run full precheck
+        precheck = await deps.githubPrecheck.precheckRepository(parsedUrl, {
+          pinnedSha: input.pinnedSha,
+        });
+      } else {
+        return {
+          httpStatus: 202,
+          body: {
+            repoId: matched.repository.id,
+            jobId: matched.job.id,
+            status: matched.repository.status,
+            reused: true,
+          },
+        };
+      }
     }
 
     const supportedFileCount = precheck.treeChecked ? precheck.supportedFileCount : 0;
     const isEmptyJsTs = precheck.treeChecked ? precheck.emptyJsTs : false;
 
-    const result = await deps.repository.createOrGetActive({
-      githubUrl: precheck.head.canonicalUrl,
-      owner: precheck.head.owner,
-      name: precheck.head.name,
-      defaultBranch: precheck.head.defaultBranch,
-      commitSha: precheck.head.commitSha,
-      sizeKb: precheck.head.sizeKb,
-      fileCount: supportedFileCount,
-      isSample: input.isSample ?? false,
-      initialStatus: isEmptyJsTs ? 'ready' : 'queued',
-      ...(deps.now !== undefined ? { now } : {}),
-    });
-
+    const result = isEmptyJsTs
+      ? await deps.repository.createOrGetVerifiedEmpty({
+          githubUrl: precheck.head.canonicalUrl,
+          owner: precheck.head.owner,
+          name: precheck.head.name,
+          defaultBranch: precheck.head.defaultBranch,
+          commitSha: precheck.head.commitSha,
+          sizeKb: precheck.head.sizeKb,
+          isSample: input.isSample ?? false,
+          ...(deps.now !== undefined ? { now } : {}),
+        })
+      : await deps.repository.createOrGetActive({
+          githubUrl: precheck.head.canonicalUrl,
+          owner: precheck.head.owner,
+          name: precheck.head.name,
+          defaultBranch: precheck.head.defaultBranch,
+          commitSha: precheck.head.commitSha,
+          sizeKb: precheck.head.sizeKb,
+          fileCount: supportedFileCount,
+          isSample: input.isSample ?? false,
+          initialStatus: 'queued',
+          ...(deps.now !== undefined ? { now } : {}),
+        });
     if (result.created && result.repository.status === 'queued') {
       let enqueued: { readonly bullmqJobId: string | null };
       try {

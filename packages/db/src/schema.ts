@@ -230,7 +230,12 @@ export type NewEdgeRecord = typeof edges.$inferInsert;
  * cleanly with zero supported TS/JS files (e.g. a 100% Python repo).
  */
 export function isEmptyJsTsRepository(
-  repo: Pick<RepositoryRecord, 'status' | 'fileCount'>,
+  repo: Pick<RepositoryRecord, 'status' | 'fileCount'> & {
+    readonly graphPersistedAt?: Date | null;
+  },
 ): boolean {
-  return repo.status === 'ready' && repo.fileCount === 0;
+  if (repo.status !== 'ready' || repo.fileCount !== 0) {
+    return false;
+  }
+  return repo.graphPersistedAt === undefined ? true : repo.graphPersistedAt !== null;
 }

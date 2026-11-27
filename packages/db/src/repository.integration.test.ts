@@ -196,24 +196,23 @@ describe('IngestionRepository (PostgreSQL integration)', () => {
     const t0 = new Date('2026-11-21T08:00:00.000Z');
     const tLater = new Date('2026-11-23T08:00:00.000Z');
 
-    // User repo (ready immediately as emptyJsTs = 0 supported files)
-    const userRepo = await repo.createOrGetActive({
+    // User repo (authoritatively verified emptyJsTs = 0 supported files -> persisted ready)
+    const userRepo = await repo.createOrGetVerifiedEmpty({
       githubUrl: 'https://github.com/acme/python-only',
       owner: 'acme',
       name: 'python-only',
       defaultBranch: 'main',
       commitSha: '2222222222222222222222222222222222222222',
       sizeKb: 50,
-      fileCount: 0,
-      initialStatus: 'ready',
       ttlDays: 7,
       now: t0,
     });
     expect(userRepo.created).toBe(true);
+    expect(userRepo.repository.graphPersistedAt?.getTime()).toBe(t0.getTime());
     expect(isEmptyJsTsRepository(userRepo.repository)).toBe(true);
     const initialExpiryMs = userRepo.repository.expiresAt?.getTime() ?? 0;
 
-    // Reusing a ready user repo bumps expires_at
+    // Reusing a persisted-ready user repo bumps expires_at without replacing it
     const reusedUser = await repo.createOrGetActive({
       githubUrl: 'https://github.com/acme/python-only',
       owner: 'acme',
@@ -228,7 +227,7 @@ describe('IngestionRepository (PostgreSQL integration)', () => {
     expect(reusedUser.repository.id).toBe(userRepo.repository.id);
     expect((reusedUser.repository.expiresAt?.getTime() ?? 0) > initialExpiryMs).toBe(true);
 
-    // Sample repo stays expires_at = NULL even on reuse
+    // Persisted-ready sample repo stays expires_at = NULL even on reuse
     const sampleRepo = await repo.createOrGetActive({
       githubUrl: 'https://github.com/shadcn-ui/taxonomy',
       owner: 'shadcn-ui',
@@ -241,6 +240,15 @@ describe('IngestionRepository (PostgreSQL integration)', () => {
       initialStatus: 'ready',
       now: t0,
     });
+    const dbClient = client;
+    if (dbClient === undefined) {
+      throw new Error('Expected initialized DB client');
+    }
+    await dbClient.db
+      .update(repositories)
+      .set({ graphPersistedAt: t0 })
+      .where(eq(repositories.id, sampleRepo.repository.id));
+
     expect(sampleRepo.repository.isSample).toBe(true);
     expect(sampleRepo.repository.expiresAt).toBeNull();
 
@@ -255,6 +263,7 @@ describe('IngestionRepository (PostgreSQL integration)', () => {
       now: tLater,
     });
     expect(reusedSample.created).toBe(false);
+    expect(reusedSample.repository.id).toBe(sampleRepo.repository.id);
     expect(reusedSample.repository.expiresAt).toBeNull();
   });
 
