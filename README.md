@@ -116,3 +116,8 @@ Local Docker endpoints use PostgreSQL at `127.0.0.1:5432` and Redis at `127.0.0.
 For standalone static analysis evaluation, follow [scripts/README.md](./scripts/README.md). Production parser integration is complete. Persistent graph storage is the next implementation phase.
 
 <!-- CI bootstrap verified -->
+
+## Development and Project Handoff
+
+- [Contributing and Development Workflow](CONTRIBUTING.md) — development standards, incremental Git checkpoints, verification requirements, and contribution rules.
+- [Project Handoff and Context Guide](docs/project-handoff.md) — architecture, implementation status, verified results, known limitations, and continuation guidance.
