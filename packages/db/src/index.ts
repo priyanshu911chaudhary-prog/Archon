@@ -147,3 +147,24 @@ export {
   type RepositoryRecord,
   type RepositoryStatus,
 } from './schema.js';
+
+export {
+  DEFAULT_GRAPH_QUERY_LIMITS,
+  DEFAULT_GRAPH_READ_TX_TIMEOUT_CONFIG,
+  GraphQueryError,
+  HARD_MAX_GRAPH_QUERY_LIMITS,
+  runBoundedReadTransaction,
+  validateGraphQueryLimits,
+  type GraphQueryErrorCode,
+  type GraphQueryLimits,
+} from './graph-query-helpers.js';
+
+export {
+  createGraphQueryRepository,
+  type GetNodeDetailInput,
+  type GetNodeEdgesInput,
+  type GetRepositoryGraphInput,
+  type GetRepositoryHubsInput,
+  type GraphQueryRepository,
+  type GraphQueryRepositoryOptions,
+} from './graph-query-repository.js';
