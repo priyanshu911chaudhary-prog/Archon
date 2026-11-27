@@ -59,7 +59,7 @@ export interface IngestionService {
 }
 
 function isTerminalStatus(status: RepositoryStatus): boolean {
-  return status === 'ready' || status === 'failed';
+  return status === 'ready' || status === 'failed' || status === 'superseded';
 }
 
 function formatJobStatus(record: RepositoryWithJob): JobStatusOutput {

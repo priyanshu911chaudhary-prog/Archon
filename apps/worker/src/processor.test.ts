@@ -145,6 +145,7 @@ function makeFakeRepoAndJob(status: RepositoryStatus): {
   const now = new Date('2026-11-23T06:00:00.000Z');
   return {
     repository: {
+      graphPersistedAt: null,
       id: SAMPLE_JOB_DATA.repoId,
       githubUrl: 'https://github.com/pmndrs/zustand',
       owner: SAMPLE_JOB_DATA.owner,
@@ -167,7 +168,8 @@ function makeFakeRepoAndJob(status: RepositoryStatus): {
       id: SAMPLE_JOB_DATA.jobId,
       repoId: SAMPLE_JOB_DATA.repoId,
       bullmqJobId: SAMPLE_JOB_DATA.jobId,
-      stage: status,
+      stage: status === 'superseded' ? 'ready' : status,
+      attemptGeneration: 0,
       progressPct: 0,
       startedAt: now,
       finishedAt: null,

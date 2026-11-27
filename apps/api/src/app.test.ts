@@ -169,6 +169,7 @@ class InMemoryIngestionRepository implements IngestionRepository {
     const isImmediateReady = initialStatus === 'ready';
 
     const repository: RepositoryRecord = {
+      graphPersistedAt: null,
       id: repoId,
       githubUrl: input.githubUrl,
       owner: input.owner.toLowerCase(),
@@ -189,6 +190,7 @@ class InMemoryIngestionRepository implements IngestionRepository {
     };
 
     const job: IngestionJobRecord = {
+      attemptGeneration: 0,
       id: jobId,
       repoId,
       bullmqJobId: null,

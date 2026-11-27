@@ -3,12 +3,13 @@ import type { ArchonDatabase } from './client.js';
 import { DbError, extractPgErrorInfo, isPgUniqueViolation } from './errors.js';
 import {
   ACTIVE_REPOSITORY_STATUSES,
+  TERMINAL_INGESTION_JOB_STAGES,
   TERMINAL_REPOSITORY_STATUSES,
   ingestionJobs,
   repositories,
   type IngestionJobRecord,
+  type IngestionJobStage,
   type RepositoryRecord,
-  type RepositoryStatus,
 } from './schema.js';
 
 export const DEFAULT_REPO_TTL_DAYS = 7;
@@ -47,7 +48,7 @@ export interface CreateOrGetActiveRepoResult extends RepositoryWithJob {
 export interface TransitionJobStageInput {
   readonly repoId: string;
   readonly jobId: string;
-  readonly toStatus: RepositoryStatus;
+  readonly toStatus: IngestionJobStage;
   readonly progressPct: number;
   readonly bullmqJobId?: string;
   readonly fileCount?: number;
@@ -111,7 +112,7 @@ export function computeExpiresAt(now: Date, ttlDays: number, isSample: boolean):
   return new Date(now.getTime() + ttlDays * MS_PER_DAY);
 }
 
-function isTerminalStatus(status: RepositoryStatus): boolean {
+function isTerminalJobStage(status: IngestionJobStage): boolean {
   return status === 'ready' || status === 'failed';
 }
 
@@ -347,7 +348,7 @@ export function createIngestionRepository(db: ArchonDatabase): IngestionReposito
 
     return db.transaction(async (tx) => {
       const repoUpdate: {
-        status: RepositoryStatus;
+        status: IngestionJobStage;
         updatedAt: Date;
         fileCount?: number;
         skippedFilesCount?: number;
@@ -403,14 +404,14 @@ export function createIngestionRepository(db: ArchonDatabase): IngestionReposito
       }
 
       const startedAt = currentJob.startedAt ?? (input.toStatus !== 'queued' ? now : null);
-      const terminal = isTerminalStatus(input.toStatus);
+      const terminal = isTerminalJobStage(input.toStatus);
       const finishedAt = terminal ? now : currentJob.finishedAt;
       const durationMs = terminal
         ? Math.max(0, now.getTime() - (startedAt ?? currentJob.createdAt).getTime())
         : currentJob.durationMs;
 
       const jobUpdate: {
-        stage: RepositoryStatus;
+        stage: IngestionJobStage;
         progressPct: number;
         startedAt: Date | null;
         finishedAt: Date | null;
@@ -458,7 +459,7 @@ export function createIngestionRepository(db: ArchonDatabase): IngestionReposito
       .where(
         and(
           eq(ingestionJobs.id, jobId),
-          notInArray(ingestionJobs.stage, [...TERMINAL_REPOSITORY_STATUSES]),
+          notInArray(ingestionJobs.stage, [...TERMINAL_INGESTION_JOB_STAGES]),
         ),
       )
       .returning({ id: ingestionJobs.id });
@@ -535,7 +536,7 @@ export function createIngestionRepository(db: ArchonDatabase): IngestionReposito
           .where(
             and(
               inArray(ingestionJobs.repoId, sweptRepoIds),
-              notInArray(ingestionJobs.stage, [...TERMINAL_REPOSITORY_STATUSES]),
+              notInArray(ingestionJobs.stage, [...TERMINAL_INGESTION_JOB_STAGES]),
             ),
           );
       }
