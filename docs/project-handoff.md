@@ -12,10 +12,10 @@ This document provides durable engineering context for continuing Archon across 
 
 ### Verified implementation baseline
 
-- Active branch: `feat/phase-5-graph-persistence` at code commit `f47877d169e6e44623f176965700e7bcc790f31d` (Phase 5.1–5.6 complete; Phase 5.7 documentation and PR preparation on top of `f47877d`).
-- Local regression baseline: **356 passing tests across 42 suites** (319 unit + 37 Docker-backed integration tests).
-- Prior merged milestones: PR #10 (`b2fc5aa`), PR #11 (`785433a`), and PR #12 (`4d4d18e`).
-- Next implementation milestone after merging Phase 5: **Phase 6: Graph Query APIs, Blast Radius and Hub Detection** (starting with Phase 6.1 architecture review).
+- Active branch: `feat/phase-6-graph-queries` at code commit `76ab23f327ea1fd9da031fbf04901d8452c36770` (Phase 6.1–6.5 complete; Phase 6.5C documentation and PR preparation on top of `76ab23f`; pending PR merge to `main`).
+- Local regression baseline: **379 passing tests across 49 suites** (334 unit + 45 Docker-backed integration tests).
+- Prior merged milestones: PR #10 (`b2fc5aa`), PR #11 (`785433a`), PR #12 (`4d4d18e`), and PR #13 (`851d00e`, Phase 5 Graph Persistence).
+- Next implementation milestone, pending Phase 6 PR merge: **Phase 7: Citation-Grounded Gemini Risk Reports** (starting with Phase 7.1 architecture review).
 
 This document does not replace inspecting actual source code.
 
@@ -27,19 +27,19 @@ Its intended users include onboarding engineers, developers refactoring shared m
 
 Archon separates deterministic structural truth from semantic AI reasoning. Dependency graph extraction must remain independent of any LLM.
 
-| Capability                   | Original requirement                                            | Implementation status     |
-| ---------------------------- | --------------------------------------------------------------- | ------------------------- |
-| Repository ingestion         | Public JS/TS repositories, up to 500 supported files and 50 MiB | Implemented               |
-| Static dependency extraction | At least 95% sampled static-edge recall target                  | Implemented and evaluated |
-| Graph persistence            | PostgreSQL nodes and edges with atomic publication and fencing  | Implemented (Phase 5)     |
-| Graph query APIs             | Persisted graph read endpoints and snippet retrieval            | Planned (Phase 6)         |
-| Blast radius                 | Direct callers/importers and 2-3 hop transitive impact          | Planned (Phase 6)         |
-| Hub detection                | Configurable incoming-edge threshold, default 30                | Planned (Phase 6)         |
-| Semantic zoom                | Folder, file, and callable graph navigation                     | Planned                   |
-| AI risk reports              | Exact file and line citations                                   | Planned                   |
-| Sample repositories          | Pre-indexed demonstration experience                            | Planned                   |
-| Semantic search              | Embeddings with keyword fallback                                | Planned                   |
-| Optional features            | Diff analysis and export                                        | Deferred                  |
+| Capability                   | Original requirement                                            | Implementation status                   |
+| ---------------------------- | --------------------------------------------------------------- | --------------------------------------- |
+| Repository ingestion         | Public JS/TS repositories, up to 500 supported files and 50 MiB | Implemented                             |
+| Static dependency extraction | At least 95% sampled static-edge recall target                  | Implemented and evaluated               |
+| Graph persistence            | PostgreSQL nodes and edges with atomic publication and fencing  | Implemented (Phase 5)                   |
+| Graph query APIs             | Persisted graph read endpoints and snippet retrieval            | Implemented (Phase 6, pending PR merge) |
+| Blast radius                 | Direct callers/importers and 2-3 hop transitive impact          | Implemented (Phase 6, pending PR merge) |
+| Hub detection                | Configurable incoming-edge threshold, default 30                | Implemented (Phase 6, pending PR merge) |
+| Semantic zoom                | Folder, file, and callable graph navigation (backend API)       | Implemented (Phase 6 API; UI planned)   |
+| AI risk reports              | Exact file and line citations                                   | Planned                                 |
+| Sample repositories          | Pre-indexed demonstration experience                            | Planned                                 |
+| Semantic search              | Embeddings with keyword fallback                                | Planned                                 |
+| Optional features            | Diff analysis and export                                        | Deferred                                |
 
 Original performance stretch targets:
 
@@ -114,11 +114,14 @@ The static-analysis core remains independent of HTTP, PostgreSQL, Redis, and LLM
 | Phase 5.3      | Delivery-generation fencing, `NOWAIT` heartbeats, enqueue safety, legacy recovery, expiry safety  |
 | Phase 5.4-5.5  | Graph validation/batch planner, atomic publication, COMMIT reconciliation, count invariants       |
 | Phase 5.6-5.7  | Constrained 512 MiB Linux persistence benchmark, evidence audit, documentation, and PR prep       |
+| Phase 6.1-6.2  | Graph query architecture, shared contracts, semantic zoom, hubs, node/edge detail, and cursors    |
+| Phase 6.3-6.4  | Deterministic bounded-frontier BFS blast radius, Fastify routes, admission gate, and rate limits  |
+| Phase 6.5      | Constrained 512 MiB Linux latency/resource validation, EXPLAIN audit, documentation, and PR prep  |
 
 Key implementation checkpoints:
 
-- PR #8 (`a2cc2a5`), PR #9 (`ea66fb6`), PR #10 (`b2fc5aa`), PR #11 (`785433a`), PR #12 (`4d4d18e`).
-- Phase 5 branch (`81f644d` -> `f47877d`): Atomic PostgreSQL graph persistence, ownership fencing, legacy recovery, failure testing, and constrained Linux resource validation.
+- Merged on `main`: PR #8 (`a2cc2a5`), PR #9 (`ea66fb6`), PR #10 (`b2fc5aa`), PR #11 (`785433a`), PR #12 (`4d4d18e`), PR #13 (`851d00e`).
+- Phase 6 branch (`9ef2962` -> `76ab23f`, pending PR merge): Graph query APIs, semantic zoom, bounded BFS blast radius, hub detection, shared Redis rate limiting, and concurrency admission.
 
 ## 6. Current Ingestion Architecture
 
@@ -141,10 +144,15 @@ Implemented endpoints:
 - `GET /api/v1/health`: PostgreSQL and Redis health, worker mode, and uptime.
 - `POST /api/v1/repos`: accepts `githubUrl`, schedules ingestion, recovers legacy-ready rows, or reuses persisted-ready/active snapshots.
 - `GET /api/v1/jobs/:jobId`: job status, progress, authoritative file/skip statistics (`emptyJsTs` derived from persisted-ready + `fileCount === 0`), and sanitized errors.
+- `GET /api/v1/repos/:repoId/graph`: semantic zoom (`folder`, `file`, `function`) with aggregated edges and zero snippets.
+- `GET /api/v1/repos/:repoId/nodes/:nodeId`: single-node metadata, source `snippet`, ancestors, degrees, and cursor-paginated children.
+- `GET /api/v1/repos/:repoId/nodes/:nodeId/edges`: cursor-paginated incoming/outgoing edge evidence with `callSiteSnippet`.
+- `GET /api/v1/repos/:repoId/nodes/:nodeId/blast-radius`: deterministic 1–3 hop reverse-edge blast radius (zero snippets).
+- `GET /api/v1/repos/:repoId/hubs`: cursor-paginated hub detection (`inDegreeDistinct > threshold` or `file_rollup`).
 
 ### Historical Phase 4 vs. Current Production Behavior
 
-In Phase 4, production workers invoked `noopAnalysisResultHandoff` and executed a separate conditional `ready` transition without persisted graph rows or a publication marker. In Phase 5, `noopAnalysisResultHandoff` has been removed from both standalone and embedded workers, `transitionJobStage` rejects `'ready'`, and every completed ingestion atomically persists `nodes` and `edges` to PostgreSQL before reaching `ready`. Read/query HTTP endpoints over persisted graphs remain Phase 6 work.
+In Phase 4, production workers invoked `noopAnalysisResultHandoff` and executed a separate conditional `ready` transition without persisted graph rows. In Phase 5, every completed ingestion atomically persists `nodes` and `edges` to PostgreSQL before reaching `ready`. In Phase 6 (pending PR merge), all five `GET`/`HEAD` graph query endpoints are exposed over persisted-ready snapshots under `REPEATABLE READ READ ONLY` transactions, shared Redis graph-read rate limiting, and `2`/`3` concurrency admission.
 
 ## 7. Static-Analysis Architecture
 
@@ -224,9 +232,14 @@ V8 old-space is not a complete process-memory limit. Subprocess isolation reduce
 
 Disabling standard library loading preserved the three frozen reference graphs but is not universally equivalent to library-enabled analysis.
 
-## 10. Verified Phase 4 and Phase 5 Results
+## 10. Verified Phase 4, Phase 5 and Phase 6 Results
 
-### Phase 5 automated verification and Linux persistence benchmark (`f47877d`)
+### Phase 6 automated verification and Linux Graph API validation (`76ab23f`, pending PR merge)
+
+- **Automated baseline:** **334 unit tests across 39 suites** + **45 Docker-backed integration tests across 10 suites** = **379 passing tests across 49 suites**.
+- **Phase 6.5 constrained Linux validation (`archon-phase65-bench:76ab23f-20261128-015659`, 512 MiB, `swap.max = 0`, external PG/Redis; combined across original, supplemental, and final recovery runs):** 700/700 valid primary blast-radius responses (p95 `6.00`–`48.86 ms`, all `< 200 ms`, 7/7 representative node-hop oracle parity), 150/150 valid secondary endpoint responses (p95 `13.41`–`114.28 ms`), verified non-overlapping edge pagination, 5 captured Drizzle `EXPLAIN (ANALYZE, BUFFERS)` plans with 0 shared read blocks, pre-shutdown cgroup peaks of `75.07 MiB` standalone (`+24.84 MiB` idle delta) and `188.46 MiB` embedded (`+10.16 MiB` idle delta), zero recorded OOM events with swap disabled, verified `422`/`429` guards, embedded parser/read overlap, active-DB `SIGTERM` drain (`HTTP 200`, `exit 0`), and verified cleanup. See [docs/phase-6-graph-queries.md](./phase-6-graph-queries.md).
+
+### Historical Phase 5 automated verification and Linux persistence benchmark (`f47877d`)
 
 - **Automated baseline:** **319 unit tests across 35 suites** + **37 Docker-backed integration tests across 7 suites** = **356 passing tests across 42 suites**; formatting, typecheck, build, strict ESLint, and `git diff --check` passed.
 - **Phase 5.6 constrained Linux benchmark (`archon-phase56-bench:f47877d-20261127-230834`, 512 MiB, swap disabled, standalone worker + local tarballs, external PG/Redis):** 11/11 sequential jobs completed (9/9 frozen real runs matched Phase 4 Linux reference outputs under persistence-only `nodes`/`edges` projections; 2/2 synthetic 480-file runs emitted 2,897 nodes and 3,252 edges across 15/7 batches with identical repeat projections; **8,365 nodes** and **11,322 edges** persisted total).
@@ -361,10 +374,10 @@ A synthetic test-fixture secret-scan false positive was corrected narrowly befor
 
 ## 12. Known Limitations and Technical Debt
 
-- Graph query APIs, blast-radius traversal, and hub detection are not implemented yet (Phase 6).
 - Interactive frontend (`apps/web`), AI risk reports, vector embeddings, semantic search, and cloud deployment are not yet implemented.
-- Observed `+50.75 MiB` idle memory increase across 11 sequential standalone worker jobs warrants monitoring under longer worker lifetimes.
-- Original p95 stretch targets (200-file indexing, blast-radius queries, AI reports) remain unverified.
+- Phase 6.5 `EXPLAIN` audit noted `hubs_or_nodes` exported-target selection scanned `480`/`2,400` bitmap index rows to return `15` rows (non-blocking watch item for larger future repos).
+- Pre-shutdown idle memory increases (`+50.75 MiB` in Phase 5.6; `+24.84 MiB` standalone / `+10.16 MiB` embedded in Phase 6.5) do not prove leak-free long-term operation.
+- Hosted cloud p95 latency and AI risk report latency remain unverified (Phase 6.5 `< 200 ms` p95 was measured on local Docker/WSL2 with external PG/Redis).
 - A known moderate dev-dependency audit finding remains in the `drizzle-kit` dependency chain.
 - Conservative static-analysis limitations remain.
 
@@ -372,8 +385,7 @@ Do not introduce unrelated dependency upgrades or repeat accepted benchmarks wit
 
 ## 13. Remaining Roadmap
 
-- **Phase 6:** Graph Query APIs, Blast Radius and Hub Detection.
-- **Phase 7:** Citation-grounded Gemini risk reports.
+- **Phase 7:** Citation-grounded Gemini risk reports (next milestone, pending Phase 6 PR merge).
 - **Phase 8:** Interactive semantic-zoom architecture map.
 - **Phase 9:** Blast-radius UI and snippet inspection.
 - **Phase 10:** Embeddings and semantic search.
@@ -382,7 +394,7 @@ Do not introduce unrelated dependency upgrades or repeat accepted benchmarks wit
 
 ### Immediate next scope
 
-**Phase 6.1** is a read-only architecture review for Graph Query APIs, Blast Radius and Hub Detection covering persisted-ready snapshot gating (`status = 'ready' AND graph_persisted_at IS NOT NULL`), query API contracts and validation, cycle-safe bounded traversal (2–3 hops) using `idx_edges_forward_lookup` / `idx_edges_reverse_lookup`, configurable `HUB_THRESHOLD` (default 30), payload bounds, and integration/latency testing. No Phase 6 implementation is authorized by this handoff.
+Pending merge of the Phase 6 PR, **Phase 7.1** is a read-only architecture review for Citation-Grounded Gemini Risk Reports covering deterministic blast-radius/snippet context assembly, strict citation grounding to persisted `(filePath, startLine, endLine, callSiteLine)` records, Gemini API client isolation/timeouts/quotas, rate limiting, and fallback/degraded error contracts. No Phase 7 implementation is authorized by this handoff.
 
 ## 14. Starting a New AI Conversation
 
@@ -416,6 +428,7 @@ The developer retains control over all repository operations.
 
 - [Project README](../README.md)
 - [Contribution and Development Workflow](../CONTRIBUTING.md)
+- [Phase 6 Graph Queries and Blast-Radius Report](./phase-6-graph-queries.md)
 - [Phase 5 Graph Persistence Report](./phase-5-graph-persistence.md)
 - [Phase 4 Parser Isolation and Validation Report](./phase-4-parser-isolation.md)
 - [Evaluation and Benchmark Reproduction Guide](../scripts/README.md)
@@ -439,5 +452,11 @@ The following evidence is stored outside Git under `C:\dev\archon-eval\`:
 - `results/phase-5-6-persistence-bench-rerun-20261127-231642/benchmark-report.md`
 - `results/phase-5-6-persistence-bench-rerun-20261127-231642/pre-cleanup-audit.json`
 - `results/phase-5-6-persistence-bench-rerun-20261127-231642/cleanup-record.json`
+- `results/phase-6-5-graph-api-bench-rerun-20261128-020725/requests.jsonl`
+- `results/phase-6-5-graph-api-bench-rerun-20261128-020725/explain-analyze.json`
+- `results/phase-6-5-graph-api-bench-rerun-20261128-020725/cgroup-samples.ndjson`
+- `results/phase-6-5-supplemental-20261128-021247/combined-acceptance-audit.json`
+- `results/phase-6-5-final-recovery-20261128-021824/final-combined-acceptance-audit.json`
+- `results/phase-6-5-final-recovery-20261128-021824/final-combined-acceptance-report.md`
 
 Preserve the original evidence and immutable evaluation manifests. Do not commit raw experiment records or downloaded repository snapshots.

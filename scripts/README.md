@@ -687,3 +687,13 @@ The preceding Step 4.2 and Step 4.3 sections remain preserved as historical base
   - `shadcn-ui/taxonomy`: `b461abd2522cbe61c4548c4c865c603be38a4fdb996bef133ffd1d34379b593c` (500 nodes, 635 edges; 3/3 exact match)
 - **Synthetic 480-file stress workload (repeat determinism only):** `966f501af5d71cb0fbcf96acb333b39cf9e07bf483198d3e2c370cdec022a8bd` (2,897 nodes / 3,252 edges across 15/7 batches per run; 2/2 identical).
 - **External harness and evidence:** Scripts at `C:\dev\archon-eval\linux-bench-scripts\phase-5-6\`, accepted evidence at `C:\dev\archon-eval\results\phase-5-6-persistence-bench-rerun-20261127-231642\`. See [docs/phase-5-graph-persistence.md](../docs/phase-5-graph-persistence.md) for exact artifact SHA-256 hashes, cgroup measurements (`211.11 MiB` pre-shutdown peak, `+50.75 MiB` idle delta), and scope limitations.
+
+## Graph Query API Benchmarks (Phase 6.5)
+
+The preceding Step 4.2, Step 4.3, and Phase 5.6 sections remain preserved as historical baselines. Phase 6 (`76ab23f327ea1fd9da031fbf04901d8452c36770`, pending PR merge) updates the local automated baseline to **334 unit tests across 39 suites** and **45 Docker-backed integration tests across 10 suites** (**379 passing tests across 49 suites**) and validates all five HTTP graph endpoints under `512 MiB` Linux cgroup v2 limits (`memory.swap.max = 0`, external PostgreSQL 17 and Redis 7).
+
+- **External harness & evidence (outside Git):** Harness scripts live at `C:\dev\archon-eval\linux-bench-scripts\phase-6-5\`, reusing the verified Phase 5.6 tarballs and `container-worker.mjs` for seeding. Combined acceptance evidence spans three preserved external directories:
+  - Original run: `C:\dev\archon-eval\results\phase-6-5-graph-api-bench-rerun-20261128-020725\` (700 primary + 150 secondary + 2 edge-pagination valid HTTP responses, `EXPLAIN (ANALYZE, BUFFERS)`, cgroup samples).
+  - Supplemental run: `C:\dev\archon-eval\results\phase-6-5-supplemental-20261128-021247\` (default-budget/tight-budget `422` guards, edge pagination, embedded parser/read overlap).
+  - Final recovery run: `C:\dev\archon-eval\results\phase-6-5-final-recovery-20261128-021824\` (normal-budget `429` rate-limit isolation/recovery, active-DB `SIGTERM` drain, historical Redis DB 15 cleanup, final combined audit).
+- See [docs/phase-6-graph-queries.md](../docs/phase-6-graph-queries.md) for measured latencies, `EXPLAIN` findings, memory bounds, SHA-256 provenance, and scope limitations.
