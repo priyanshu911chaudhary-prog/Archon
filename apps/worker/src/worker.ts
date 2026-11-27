@@ -6,7 +6,6 @@ import { createWorkerServiceLifecycle } from './lifecycle.js';
 import {
   PRODUCTION_PARSER_CONFIG,
   createProductionParserAdapter,
-  noopAnalysisResultHandoff,
   preflightProductionParserEntrypoint,
   resolveProductionParserLimitsFromEnv,
   type ProductionParserLogEvent,
@@ -118,7 +117,6 @@ export async function startWorker(): Promise<void> {
       maxSupportedFiles: env.MAX_SUPPORTED_FILES,
       maxRepoSizeMb: env.MAX_REPO_SIZE_MB,
       parserAdapter,
-      analysisResultHandoff: noopAnalysisResultHandoff,
       shutdownSignal: lifecycle.shutdownSignal,
       fatalSignal: lifecycle.fatalSignal,
       isFatalState: lifecycle.isFatal,

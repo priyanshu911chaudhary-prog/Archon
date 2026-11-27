@@ -1,12 +1,36 @@
 import { randomUUID } from 'node:crypto';
 import {
+  ACTIVE_REPOSITORY_STATUSES,
+  DEFAULT_CLAIM_PROGRESS_PCT,
+  DEFAULT_ENQUEUE_ERROR_CODE,
+  DEFAULT_ENQUEUE_ERROR_MESSAGE,
   DEFAULT_REPO_TTL_DAYS,
   DEFAULT_STALE_JOB_THRESHOLD_MS,
+  assertValidAttemptOwnership,
   computeExpiresAt,
+  isLegacyReadyRepository,
+  DbError,
+  GraphPublicationAbortedError,
+  isPersistedReadyRepository,
+  prepareGraphPersistencePlan,
+  resolvePublicationCounts,
+  validateClaimIngestionAttemptInput,
+  type AttachBullMqJobIdResult,
+  type ClaimIngestionAttemptInput,
+  type ClaimIngestionAttemptResult,
   type CreateOrGetActiveRepoInput,
   type CreateOrGetActiveRepoResult,
+  type CreateVerifiedEmptyRepoInput,
+  type DeleteExpiredRepositoriesOptions,
+  type FailQueuedJobOnEnqueueErrorInput,
+  type FailQueuedJobOnEnqueueErrorResult,
+  type IngestionAttemptOwnership,
   type IngestionJobRecord,
+  type IngestionJobStage,
   type IngestionRepository,
+  type PublishRepositoryGraphInput,
+  type PublishRepositoryGraphResult,
+  type ReconcilePublishedAttemptResult,
   type RepositoryRecord,
   type RepositoryStatus,
   type RepositoryWithJob,
@@ -15,6 +39,7 @@ import {
   type TouchHeartbeatResult,
   type TransitionJobStageInput,
   type TransitionJobStageResult,
+  type VerifiedAttemptOwnershipResult,
 } from '@archon/db';
 import { createLogger, parseEnv, type AppEnv } from '@archon/shared';
 import type { FastifyInstance } from 'fastify';
@@ -32,9 +57,9 @@ import {
   type IngestionJobEnqueuer,
   type IngestionJobPayload,
 } from './queue/enqueuer.js';
-
 import { createRedisRateLimitStoreConfig, type RateLimitStoreConfig } from './rate-limit.js';
 import { createRedisRateLimitStore } from './redis-rate-limit-store.js';
+import { createIngestionService } from './services/ingestion-service.js';
 
 const ZUSTAND_SHA = '9fed2eb2f3af672da9f7bf694b996df3831fc207';
 const SAMPLE_TREE_SHA = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -103,9 +128,15 @@ function makeTestEnv(overrides: Record<string, string | undefined> = {}): AppEnv
   });
 }
 
-function isTerminal(status: RepositoryStatus): boolean {
-  return status === 'ready' || status === 'failed';
+function isTerminalRepo(status: RepositoryStatus): boolean {
+  return status === 'ready' || status === 'failed' || status === 'superseded';
 }
+
+function isTerminalStage(stage: IngestionJobStage): boolean {
+  return stage === 'ready' || stage === 'failed';
+}
+
+const ACTIVE_REPO_STATUS_SET = new Set<RepositoryStatus>(ACTIVE_REPOSITORY_STATUSES);
 
 class InMemoryIngestionRepository implements IngestionRepository {
   readonly repos = new Map<string, RepositoryRecord>();
@@ -124,7 +155,7 @@ class InMemoryIngestionRepository implements IngestionRepository {
         repository.owner === lowOwner &&
         repository.name === lowName &&
         repository.commitSha === commitSha &&
-        repository.status !== 'failed'
+        ACTIVE_REPO_STATUS_SET.has(repository.status)
       ) {
         const job = this.findLatestJobSync(repository.id);
         if (job) {
@@ -147,72 +178,234 @@ class InMemoryIngestionRepository implements IngestionRepository {
     return Promise.resolve({ repository, job });
   }
 
-  async createOrGetActive(input: CreateOrGetActiveRepoInput): Promise<CreateOrGetActiveRepoResult> {
-    const now = input.now ?? new Date();
-    const ttlDays = input.ttlDays ?? DEFAULT_REPO_TTL_DAYS;
-    const isSample = input.isSample ?? false;
-    const initialStatus = input.initialStatus ?? 'queued';
+  private async createOrGetInternal(params: {
+    readonly githubUrl: string;
+    readonly owner: string;
+    readonly name: string;
+    readonly defaultBranch: string;
+    readonly commitSha: string;
+    readonly sizeKb: number;
+    readonly fileCount: number;
+    readonly isSample: boolean;
+    readonly initialStatus: 'queued' | 'ready';
+    readonly verifiedEmptyGraph: boolean;
+    readonly ttlDays: number;
+    readonly now: Date;
+  }): Promise<CreateOrGetActiveRepoResult> {
+    const existing = await this.findActiveByOwnerNameSha(
+      params.owner,
+      params.name,
+      params.commitSha,
+    );
 
-    const existing = await this.findActiveByOwnerNameSha(input.owner, input.name, input.commitSha);
-    if (existing) {
-      if (existing.repository.status === 'ready' && !existing.repository.isSample) {
-        const bumped = await this.bumpRepositoryExpiry(existing.repository.id, { ttlDays, now });
-        if (bumped) {
-          return { created: false, repository: bumped, job: existing.job };
+    let supersededRepoId: string | undefined;
+    let effectiveIsSample =
+      params.isSample || this.hasRetainedSampleSync(params.owner, params.name, params.commitSha);
+
+    if (existing !== null) {
+      if (isLegacyReadyRepository(existing.repository)) {
+        this.repos.set(existing.repository.id, {
+          ...existing.repository,
+          status: 'superseded',
+          updatedAt: params.now,
+        });
+        supersededRepoId = existing.repository.id;
+        effectiveIsSample = existing.repository.isSample || params.isSample;
+      } else {
+        if (isPersistedReadyRepository(existing.repository) && !existing.repository.isSample) {
+          const bumped = await this.bumpRepositoryExpiry(existing.repository.id, {
+            ttlDays: params.ttlDays,
+            now: params.now,
+          });
+          if (bumped !== null) {
+            return { created: false, repository: bumped, job: existing.job };
+          }
         }
+        return { created: false, repository: existing.repository, job: existing.job };
       }
-      return { created: false, repository: existing.repository, job: existing.job };
     }
 
     const repoId = randomUUID();
     const jobId = randomUUID();
-    const isImmediateReady = initialStatus === 'ready';
+    const isImmediateReady = params.verifiedEmptyGraph || params.initialStatus === 'ready';
 
     const repository: RepositoryRecord = {
+      graphPersistedAt: params.verifiedEmptyGraph ? params.now : null,
       id: repoId,
-      githubUrl: input.githubUrl,
-      owner: input.owner.toLowerCase(),
-      name: input.name.toLowerCase(),
-      defaultBranch: input.defaultBranch,
-      commitSha: input.commitSha,
-      status: initialStatus,
+      githubUrl: params.githubUrl,
+      owner: params.owner.toLowerCase(),
+      name: params.name.toLowerCase(),
+      defaultBranch: params.defaultBranch,
+      commitSha: params.commitSha,
+      status: isImmediateReady ? 'ready' : 'queued',
       embeddingStatus: 'pending',
-      isSample,
-      fileCount: input.fileCount ?? 0,
+      isSample: effectiveIsSample,
+      fileCount: params.verifiedEmptyGraph ? 0 : params.fileCount,
       skippedFilesCount: 0,
-      sizeKb: input.sizeKb,
+      sizeKb: params.sizeKb,
       errorCode: null,
       errorMessage: null,
-      expiresAt: computeExpiresAt(now, ttlDays, isSample),
-      createdAt: now,
-      updatedAt: now,
+      expiresAt: computeExpiresAt(params.now, params.ttlDays, effectiveIsSample),
+      createdAt: params.now,
+      updatedAt: params.now,
     };
 
     const job: IngestionJobRecord = {
+      attemptGeneration: 0,
       id: jobId,
       repoId,
       bullmqJobId: null,
-      stage: initialStatus,
+      stage: isImmediateReady ? 'ready' : 'queued',
       progressPct: isImmediateReady ? 100 : 0,
-      startedAt: isImmediateReady ? now : null,
-      finishedAt: isImmediateReady ? now : null,
+      startedAt: isImmediateReady ? params.now : null,
+      finishedAt: isImmediateReady ? params.now : null,
       durationMs: isImmediateReady ? 0 : null,
       errorDetail: null,
-      createdAt: now,
+      createdAt: params.now,
     };
 
     this.repos.set(repoId, repository);
     this.jobs.set(jobId, job);
-    return { created: true, repository, job };
+    return {
+      created: true,
+      ...(supersededRepoId !== undefined ? { supersededRepoId } : {}),
+      repository,
+      job,
+    };
   }
 
-  transitionJobStage(input: TransitionJobStageInput): Promise<TransitionJobStageResult> {
-    const existingRepo = this.repos.get(input.repoId);
-    const existingJob = this.jobs.get(input.jobId);
-    if (!existingRepo || !existingJob || isTerminal(existingRepo.status)) {
-      return Promise.resolve({ applied: false });
+  createOrGetActive(input: CreateOrGetActiveRepoInput): Promise<CreateOrGetActiveRepoResult> {
+    return this.createOrGetInternal({
+      githubUrl: input.githubUrl,
+      owner: input.owner,
+      name: input.name,
+      defaultBranch: input.defaultBranch,
+      commitSha: input.commitSha,
+      sizeKb: input.sizeKb,
+      fileCount: input.fileCount ?? 0,
+      isSample: input.isSample ?? false,
+      initialStatus: input.initialStatus ?? 'queued',
+      verifiedEmptyGraph: false,
+      ttlDays: input.ttlDays ?? DEFAULT_REPO_TTL_DAYS,
+      now: input.now ?? new Date(),
+    });
+  }
+
+  createOrGetVerifiedEmpty(
+    input: CreateVerifiedEmptyRepoInput,
+  ): Promise<CreateOrGetActiveRepoResult> {
+    return this.createOrGetInternal({
+      githubUrl: input.githubUrl,
+      owner: input.owner,
+      name: input.name,
+      defaultBranch: input.defaultBranch,
+      commitSha: input.commitSha,
+      sizeKb: input.sizeKb,
+      fileCount: 0,
+      isSample: input.isSample ?? false,
+      initialStatus: 'ready',
+      verifiedEmptyGraph: true,
+      ttlDays: input.ttlDays ?? DEFAULT_REPO_TTL_DAYS,
+      now: input.now ?? new Date(),
+    });
+  }
+  private verifyOwnershipSync(
+    ownership: IngestionAttemptOwnership,
+  ): VerifiedAttemptOwnershipResult {
+    assertValidAttemptOwnership(ownership);
+    const repository = this.repos.get(ownership.repoId);
+    const job = this.jobs.get(ownership.jobId);
+    if (!repository || job?.repoId !== ownership.repoId) {
+      return { outcome: 'missing' };
+    }
+    if (repository.commitSha !== ownership.commitSha) {
+      return { outcome: 'identity_mismatch', reason: 'commit_sha_mismatch' };
+    }
+    if (job.bullmqJobId !== null && job.bullmqJobId !== ownership.bullmqJobId) {
+      return { outcome: 'identity_mismatch', reason: 'stored_bullmq_job_id_mismatch' };
+    }
+    if (isTerminalRepo(repository.status)) {
+      return { outcome: 'terminal', status: repository.status };
+    }
+    if (isTerminalStage(job.stage)) {
+      return { outcome: 'terminal', status: job.stage };
+    }
+    if (job.attemptGeneration !== ownership.attemptGeneration) {
+      return {
+        outcome: 'ownership_lost',
+        storedGeneration: job.attemptGeneration,
+        expectedGeneration: ownership.attemptGeneration,
+      };
+    }
+    if (job.bullmqJobId !== ownership.bullmqJobId) {
+      return { outcome: 'identity_mismatch', reason: 'missing_stored_bullmq_job_id' };
+    }
+    return { outcome: 'verified', repository, job };
+  }
+
+  claimIngestionAttempt(input: ClaimIngestionAttemptInput): Promise<ClaimIngestionAttemptResult> {
+    const validated = validateClaimIngestionAttemptInput(input);
+    if (!validated.ok) {
+      return Promise.resolve(validated.rejection);
+    }
+    const { ownership } = validated;
+    const repo = this.repos.get(ownership.repoId);
+    const job = this.jobs.get(ownership.jobId);
+    if (!repo || job?.repoId !== ownership.repoId) {
+      return Promise.resolve({ outcome: 'missing' });
+    }
+    if (repo.commitSha !== ownership.commitSha) {
+      return Promise.resolve({ outcome: 'identity_mismatch', reason: 'commit_sha_mismatch' });
+    }
+    if (job.bullmqJobId !== null && job.bullmqJobId !== ownership.bullmqJobId) {
+      return Promise.resolve({
+        outcome: 'identity_mismatch',
+        reason: 'stored_bullmq_job_id_mismatch',
+      });
+    }
+    if (isTerminalRepo(repo.status)) {
+      return Promise.resolve({ outcome: 'already_terminal', status: repo.status });
+    }
+    if (isTerminalStage(job.stage)) {
+      return Promise.resolve({ outcome: 'already_terminal', status: job.stage });
+    }
+    if (ownership.attemptGeneration <= job.attemptGeneration) {
+      return Promise.resolve({
+        outcome: 'stale_generation',
+        storedGeneration: job.attemptGeneration,
+        incomingGeneration: ownership.attemptGeneration,
+      });
+    }
+    const claimTime = input.now ?? new Date();
+    const updatedRepo: RepositoryRecord = { ...repo, status: 'cloning', updatedAt: claimTime };
+    const updatedJob: IngestionJobRecord = {
+      ...job,
+      stage: 'cloning',
+      progressPct: input.progressPct ?? DEFAULT_CLAIM_PROGRESS_PCT,
+      attemptGeneration: ownership.attemptGeneration,
+      bullmqJobId: ownership.bullmqJobId,
+      startedAt: job.startedAt ?? claimTime,
+    };
+    this.repos.set(ownership.repoId, updatedRepo);
+    this.jobs.set(ownership.jobId, updatedJob);
+    return Promise.resolve({
+      outcome: 'claimed',
+      ownership,
+      repository: updatedRepo,
+      job: updatedJob,
+    });
+  }
+
+  transitionJobStage(
+    ownership: IngestionAttemptOwnership,
+    input: TransitionJobStageInput,
+  ): Promise<TransitionJobStageResult> {
+    const verified = this.verifyOwnershipSync(ownership);
+    if (verified.outcome !== 'verified') {
+      return Promise.resolve({ ...verified, applied: false });
     }
 
+    const { repository: existingRepo, job: existingJob } = verified;
     const now = input.now ?? new Date();
     const updatedRepo: RepositoryRecord = {
       ...existingRepo,
@@ -225,50 +418,255 @@ class InMemoryIngestionRepository implements IngestionRepository {
         input.errorMessage !== undefined ? input.errorMessage : existingRepo.errorMessage,
     };
 
-    const startedAt = existingJob.startedAt ?? (input.toStatus !== 'queued' ? now : null);
-    const terminal = isTerminal(input.toStatus);
+    const startedAt = existingJob.startedAt ?? now;
+    const terminal = isTerminalStage(input.toStatus);
     const updatedJob: IngestionJobRecord = {
       ...existingJob,
       stage: input.toStatus,
       progressPct: input.progressPct,
-      bullmqJobId: input.bullmqJobId ?? existingJob.bullmqJobId,
       startedAt,
       finishedAt: terminal ? now : existingJob.finishedAt,
       durationMs: terminal
-        ? Math.max(0, now.getTime() - (startedAt ?? existingJob.createdAt).getTime())
+        ? Math.max(0, now.getTime() - startedAt.getTime())
         : existingJob.durationMs,
       errorDetail: input.errorDetail !== undefined ? input.errorDetail : existingJob.errorDetail,
     };
 
+    this.repos.set(ownership.repoId, updatedRepo);
+    this.jobs.set(ownership.jobId, updatedJob);
+    return Promise.resolve({
+      outcome: 'applied',
+      applied: true,
+      repository: updatedRepo,
+      job: updatedJob,
+    });
+  }
+
+  publishRepositoryGraph(
+    ownership: IngestionAttemptOwnership,
+    input: PublishRepositoryGraphInput,
+  ): Promise<PublishRepositoryGraphResult> {
+    if (input.signal?.aborted === true) {
+      return Promise.reject(new GraphPublicationAbortedError());
+    }
+    const plan = prepareGraphPersistencePlan(ownership.repoId, input.output, input.batchOptions);
+    const counts = resolvePublicationCounts(input.extractionStats, input.output);
+    const verified = this.verifyOwnershipSync(ownership);
+    if (verified.outcome !== 'verified') {
+      return Promise.resolve({ ...verified, applied: false });
+    }
+    if (
+      verified.repository.status !== 'building_graph' ||
+      verified.job.stage !== 'building_graph'
+    ) {
+      return Promise.reject(
+        new DbError('DB_VALIDATION_ERROR', 'Repository and job must be in building_graph stage.'),
+      );
+    }
+    const now = input.now ?? new Date();
+    const updatedRepo: RepositoryRecord = {
+      ...verified.repository,
+      status: 'ready',
+      graphPersistedAt: now,
+      fileCount: counts.fileCount,
+      skippedFilesCount: counts.skippedFilesCount,
+      updatedAt: now,
+    };
+    const startedAt = verified.job.startedAt ?? now;
+    const updatedJob: IngestionJobRecord = {
+      ...verified.job,
+      stage: 'ready',
+      progressPct: 100,
+      startedAt,
+      finishedAt: now,
+      durationMs: Math.max(0, now.getTime() - startedAt.getTime()),
+    };
+    this.repos.set(ownership.repoId, updatedRepo);
+    this.jobs.set(ownership.jobId, updatedJob);
+    return Promise.resolve({
+      outcome: 'published',
+      applied: true,
+      repository: updatedRepo,
+      job: updatedJob,
+      persistedNodeCount: plan.nodeCount,
+      persistedEdgeCount: plan.edgeCount,
+      nodeBatches: plan.nodeBatches.length,
+      edgeBatches: plan.edgeBatches.length,
+    });
+  }
+
+  reconcilePublishedAttempt(
+    ownership: IngestionAttemptOwnership,
+  ): Promise<ReconcilePublishedAttemptResult> {
+    assertValidAttemptOwnership(ownership);
+    const repository = this.repos.get(ownership.repoId);
+    const job = this.jobs.get(ownership.jobId);
+    if (!repository || job?.repoId !== ownership.repoId) {
+      return Promise.resolve({ outcome: 'missing' });
+    }
+    if (repository.commitSha !== ownership.commitSha) {
+      return Promise.resolve({ outcome: 'identity_mismatch', reason: 'commit_sha_mismatch' });
+    }
+    if (job.bullmqJobId === null) {
+      return Promise.resolve({
+        outcome: 'identity_mismatch',
+        reason: 'missing_stored_bullmq_job_id',
+      });
+    }
+    if (job.bullmqJobId !== ownership.bullmqJobId) {
+      return Promise.resolve({
+        outcome: 'identity_mismatch',
+        reason: 'stored_bullmq_job_id_mismatch',
+      });
+    }
+    if (
+      isPersistedReadyRepository(repository) &&
+      job.stage === 'ready' &&
+      job.progressPct === 100 &&
+      job.attemptGeneration === ownership.attemptGeneration
+    ) {
+      return Promise.resolve({ outcome: 'published_by_owner', repository, job });
+    }
+    if (isTerminalRepo(repository.status)) {
+      return Promise.resolve({ outcome: 'terminal', status: repository.status });
+    }
+    if (isTerminalStage(job.stage)) {
+      return Promise.resolve({ outcome: 'terminal', status: job.stage });
+    }
+    if (job.attemptGeneration !== ownership.attemptGeneration) {
+      return Promise.resolve({
+        outcome: 'ownership_lost',
+        storedGeneration: job.attemptGeneration,
+        expectedGeneration: ownership.attemptGeneration,
+      });
+    }
+    return Promise.resolve({ outcome: 'still_owned_unpublished', repository, job });
+  }
+
+  failQueuedJobOnEnqueueError(
+    input: FailQueuedJobOnEnqueueErrorInput,
+  ): Promise<FailQueuedJobOnEnqueueErrorResult> {
+    const repo = this.repos.get(input.repoId);
+    const job = this.jobs.get(input.jobId);
+    if (!repo || job?.repoId !== input.repoId) {
+      return Promise.resolve({ outcome: 'missing', applied: false });
+    }
+    if (isTerminalRepo(repo.status)) {
+      return Promise.resolve({ outcome: 'already_terminal', applied: false, status: repo.status });
+    }
+    if (isTerminalStage(job.stage)) {
+      return Promise.resolve({ outcome: 'already_terminal', applied: false, status: job.stage });
+    }
+    if (repo.status !== 'queued' || job.stage !== 'queued' || job.attemptGeneration !== 0) {
+      return Promise.resolve({
+        outcome: 'already_claimed',
+        applied: false,
+        status: repo.status,
+        stage: job.stage,
+        attemptGeneration: job.attemptGeneration,
+      });
+    }
+
+    const now = input.now ?? new Date();
+    const updatedRepo: RepositoryRecord = {
+      ...repo,
+      status: 'failed',
+      errorCode: input.errorCode ?? DEFAULT_ENQUEUE_ERROR_CODE,
+      errorMessage: input.errorMessage ?? DEFAULT_ENQUEUE_ERROR_MESSAGE,
+      updatedAt: now,
+    };
+    const startedAt = job.startedAt ?? now;
+    const updatedJob: IngestionJobRecord = {
+      ...job,
+      stage: 'failed',
+      progressPct: 0,
+      startedAt,
+      finishedAt: now,
+      durationMs: Math.max(0, now.getTime() - startedAt.getTime()),
+      errorDetail: input.errorDetail !== undefined ? input.errorDetail : DEFAULT_ENQUEUE_ERROR_CODE,
+    };
     this.repos.set(input.repoId, updatedRepo);
     this.jobs.set(input.jobId, updatedJob);
-    return Promise.resolve({ applied: true, repository: updatedRepo, job: updatedJob });
+    return Promise.resolve({
+      outcome: 'failed',
+      applied: true,
+      repository: updatedRepo,
+      job: updatedJob,
+    });
   }
 
-  attachBullMqJobId(jobId: string, bullmqJobId: string): Promise<boolean> {
+  attachBullMqJobId(jobId: string, bullmqJobId: string): Promise<AttachBullMqJobIdResult> {
+    if (bullmqJobId !== jobId) {
+      return Promise.resolve({
+        outcome: 'identity_mismatch',
+        attached: false,
+        reason: 'bullmq_job_id_mismatch',
+      });
+    }
     const job = this.jobs.get(jobId);
-    if (!job || isTerminal(job.stage)) {
-      return Promise.resolve(false);
+    if (!job) {
+      return Promise.resolve({ outcome: 'missing', attached: false });
+    }
+    const repo = this.repos.get(job.repoId);
+    if (!repo) {
+      return Promise.resolve({ outcome: 'missing', attached: false });
+    }
+    if (job.bullmqJobId !== null) {
+      if (job.bullmqJobId === bullmqJobId) {
+        return Promise.resolve({ outcome: 'already_attached', attached: true });
+      }
+      return Promise.resolve({
+        outcome: 'identity_mismatch',
+        attached: false,
+        reason: 'stored_bullmq_job_id_mismatch',
+      });
+    }
+    if (isTerminalRepo(repo.status)) {
+      return Promise.resolve({ outcome: 'terminal', attached: false, status: repo.status });
+    }
+    if (isTerminalStage(job.stage)) {
+      return Promise.resolve({ outcome: 'terminal', attached: false, status: job.stage });
     }
     this.jobs.set(jobId, { ...job, bullmqJobId });
-    return Promise.resolve(true);
+    return Promise.resolve({ outcome: 'attached', attached: true });
   }
 
-  touchJobHeartbeat(repoId: string, now: Date = new Date()): Promise<TouchHeartbeatResult> {
-    const repo = this.repos.get(repoId);
-    if (!repo || isTerminal(repo.status)) {
-      return Promise.resolve({ updated: false });
+  touchJobHeartbeat(
+    ownership: IngestionAttemptOwnership,
+    now: Date = new Date(),
+  ): Promise<TouchHeartbeatResult> {
+    const verified = this.verifyOwnershipSync(ownership);
+    switch (verified.outcome) {
+      case 'missing':
+        return Promise.resolve({ outcome: 'missing', updated: false });
+      case 'terminal':
+        return Promise.resolve({ outcome: 'terminal', updated: false, status: verified.status });
+      case 'ownership_lost':
+        return Promise.resolve({
+          outcome: 'ownership_lost',
+          updated: false,
+          reason: 'stale_generation',
+          storedGeneration: verified.storedGeneration,
+          expectedGeneration: verified.expectedGeneration,
+        });
+      case 'identity_mismatch':
+        return Promise.resolve({
+          outcome: 'ownership_lost',
+          updated: false,
+          reason: verified.reason,
+        });
+      case 'verified':
+        break;
     }
-    this.repos.set(repoId, { ...repo, updatedAt: now });
-    return Promise.resolve({ updated: true, updatedAt: now });
+    this.repos.set(ownership.repoId, { ...verified.repository, updatedAt: now });
+    return Promise.resolve({ outcome: 'updated', updated: true, updatedAt: now });
   }
-
   bumpRepositoryExpiry(
     repoId: string,
     options: { readonly ttlDays?: number; readonly now?: Date } = {},
   ): Promise<RepositoryRecord | null> {
     const repo = this.repos.get(repoId);
-    if (repo?.status !== 'ready' || repo.isSample) {
+    if (repo === undefined || !isPersistedReadyRepository(repo) || repo.isSample) {
       return Promise.resolve(null);
     }
     const now = options.now ?? new Date();
@@ -282,7 +680,6 @@ class InMemoryIngestionRepository implements IngestionRepository {
     this.expiryBumpCount += 1;
     return Promise.resolve(updated);
   }
-
   sweepStaleJobs(input: SweepStaleJobsInput = {}): Promise<SweepStaleJobsResult> {
     const thresholdMs = input.staleThresholdMs ?? DEFAULT_STALE_JOB_THRESHOLD_MS;
     const now = input.now ?? new Date();
@@ -293,7 +690,7 @@ class InMemoryIngestionRepository implements IngestionRepository {
       if (input.repoId !== undefined && id !== input.repoId) {
         continue;
       }
-      if (!isTerminal(repo.status) && repo.updatedAt.getTime() < cutoffMs) {
+      if (!isTerminalRepo(repo.status) && repo.updatedAt.getTime() < cutoffMs) {
         this.repos.set(id, {
           ...repo,
           status: 'failed',
@@ -302,7 +699,7 @@ class InMemoryIngestionRepository implements IngestionRepository {
           updatedAt: now,
         });
         for (const [jobId, job] of this.jobs.entries()) {
-          if (job.repoId === id && !isTerminal(job.stage)) {
+          if (job.repoId === id && !isTerminalStage(job.stage)) {
             this.jobs.set(jobId, {
               ...job,
               stage: 'failed',
@@ -315,18 +712,46 @@ class InMemoryIngestionRepository implements IngestionRepository {
       }
     }
 
-    return Promise.resolve({ sweptRepoIds, count: sweptRepoIds.length });
+    return Promise.resolve({
+      sweptRepoIds,
+      count: sweptRepoIds.length,
+      batchesProcessed: sweptRepoIds.length > 0 ? 1 : 0,
+      reachedLimit: false,
+    });
   }
 
-  deleteExpiredRepositories(now: Date = new Date()): Promise<readonly string[]> {
+  deleteExpiredRepositories(
+    now: Date = new Date(),
+    _options?: DeleteExpiredRepositoriesOptions,
+  ): Promise<readonly string[]> {
     const deleted: string[] = [];
     for (const [id, repo] of this.repos.entries()) {
-      if (!repo.isSample && repo.expiresAt !== null && repo.expiresAt.getTime() < now.getTime()) {
+      if (
+        !repo.isSample &&
+        isTerminalRepo(repo.status) &&
+        repo.expiresAt !== null &&
+        repo.expiresAt.getTime() < now.getTime()
+      ) {
         this.repos.delete(id);
         deleted.push(id);
       }
     }
     return Promise.resolve(deleted);
+  }
+  private hasRetainedSampleSync(owner: string, name: string, commitSha: string): boolean {
+    const lowOwner = owner.toLowerCase();
+    const lowName = name.toLowerCase();
+    for (const repo of this.repos.values()) {
+      if (
+        repo.owner === lowOwner &&
+        repo.name === lowName &&
+        repo.commitSha === commitSha &&
+        repo.isSample
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private findLatestJobSync(repoId: string): IngestionJobRecord | null {
@@ -406,7 +831,6 @@ describe('Archon Fastify API (app.inject route tests)', () => {
       githubPrecheck?: Pick<GitHubPrecheckClient, 'precheckRepository'>;
       enqueuer?: IngestionJobEnqueuer;
       now?: () => Date;
-
       readonly onAppCreated?: BuildAppDependencies['onAppCreated'];
     } = {},
   ) {
@@ -417,7 +841,7 @@ describe('Archon Fastify API (app.inject route tests)', () => {
     const spyEnqueuer: IngestionJobEnqueuer = overrides.enqueuer ?? {
       enqueue(payload) {
         enqueuedPayloads.push(payload);
-        return Promise.resolve({ bullmqJobId: `bull-${enqueuedPayloads.length}` });
+        return Promise.resolve({ bullmqJobId: payload.jobId });
       },
     };
 
@@ -431,7 +855,6 @@ describe('Archon Fastify API (app.inject route tests)', () => {
       rateLimitStore: overrides.rateLimitStore,
       enqueuer: spyEnqueuer,
       now: overrides.now,
-
       ...(overrides.onAppCreated !== undefined ? { onAppCreated: overrides.onAppCreated } : {}),
     });
 
@@ -647,6 +1070,7 @@ describe('Archon Fastify API (app.inject route tests)', () => {
     expect(first.statusCode).toBe(202);
     const firstBody = parseJsonBody(first.body, repoCreateBodySchema);
     expect(enqueuedPayloads).toHaveLength(1);
+    expect(enqueuedPayloads[0]?.jobId).toBe(firstBody.jobId);
 
     // Duplicate while still queued -> attaches to same job without double-enqueue
     const duplicate = await app.inject({
@@ -761,7 +1185,6 @@ describe('Archon Fastify API (app.inject route tests)', () => {
       },
     });
 
-    // Two requests from same remoteAddress with DIFFERENT spoofed X-Forwarded-For values consume the 2-req limit
     const r1 = await app.inject({
       method: 'POST',
       url: '/api/v1/repos',
@@ -780,7 +1203,6 @@ describe('Archon Fastify API (app.inject route tests)', () => {
     });
     expect(r2.statusCode).toBe(202);
 
-    // Third request with yet another spoofed X-Forwarded-For is STILL blocked because hops=0 uses remoteAddress
     const r3 = await app.inject({
       method: 'POST',
       url: '/api/v1/repos',
@@ -792,7 +1214,6 @@ describe('Archon Fastify API (app.inject route tests)', () => {
     expect(parseJsonBody(r3.body, errorEnvelopeSchema).error.code).toBe('RATE_LIMITED');
     expect(r3.headers['retry-after']).toBeDefined();
 
-    // Health and job polling are NOT rate-limited even for the blocked IP
     const healthRes = await app.inject({
       method: 'GET',
       url: '/api/v1/health',
@@ -809,7 +1230,6 @@ describe('Archon Fastify API (app.inject route tests)', () => {
       },
     });
 
-    // Client spoofs leftmost IP (203.0.113.1), while trusted proxy appends real client IP (198.51.100.10)
     const r1 = await app.inject({
       method: 'POST',
       url: '/api/v1/repos',
@@ -819,7 +1239,6 @@ describe('Archon Fastify API (app.inject route tests)', () => {
     });
     expect(r1.statusCode).toBe(202);
 
-    // Changing only the spoofed leftmost IP STILL hits 198.51.100.10's exhausted bucket -> 429
     const r2 = await app.inject({
       method: 'POST',
       url: '/api/v1/repos',
@@ -830,7 +1249,6 @@ describe('Archon Fastify API (app.inject route tests)', () => {
     expect(r2.statusCode).toBe(429);
     expect(parseJsonBody(r2.body, errorEnvelopeSchema).error.code).toBe('RATE_LIMITED');
 
-    // A genuinely distinct client address appended by the proxy (198.51.100.20) gets its own bucket -> 202
     const r3 = await app.inject({
       method: 'POST',
       url: '/api/v1/repos',
@@ -863,7 +1281,7 @@ describe('Archon Fastify API (app.inject route tests)', () => {
     expect(badBody.redis).toBe('error');
   });
 
-  it('POST /api/v1/repos returns 503 QUEUE_UNAVAILABLE and marks the DB row failed when enqueueing fails', async () => {
+  it('POST /api/v1/repos returns 503 QUEUE_UNAVAILABLE and marks queued DB row failed on enqueue error, without overwriting an already-claimed attempt', async () => {
     const repository = new InMemoryIngestionRepository();
     const { app } = await createTestApp({
       repository,
@@ -885,6 +1303,35 @@ describe('Archon Fastify API (app.inject route tests)', () => {
     expect(repos).toHaveLength(1);
     expect(repos[0]?.status).toBe('failed');
     expect(repos[0]?.errorCode).toBe('QUEUE_ENQUEUE_FAILED');
+
+    // Race case: worker claims ownership before enqueue error arrives -> must NOT be overwritten
+    const racedRepo = new InMemoryIngestionRepository();
+    const { app: racedApp } = await createTestApp({
+      repository: racedRepo,
+      enqueuer: {
+        async enqueue(payload) {
+          const claimed = await racedRepo.claimIngestionAttempt({
+            repoId: payload.repoId,
+            jobId: payload.jobId,
+            bullmqJobId: payload.jobId,
+            commitSha: payload.commitSha,
+            attemptGeneration: 1,
+          });
+          expect(claimed.outcome).toBe('claimed');
+          throw new Error('Late Redis enqueue timeout');
+        },
+      },
+    });
+
+    const racedRes = await racedApp.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(racedRes.statusCode).toBe(503);
+    const racedRow = [...racedRepo.repos.values()][0];
+    expect(racedRow?.status).toBe('cloning');
+    expect(racedRow?.errorCode).toBeNull();
   });
 
   it('fails open with a logged warning (skipOnError: true) when Redis rate-limit store is not ready', async () => {
@@ -966,5 +1413,408 @@ describe('Archon Fastify API (app.inject route tests)', () => {
         }
       }
     }
+  });
+
+  it('preserves accepted queued status when attachBullMqJobId fails or rejects after successful enqueue and logs safely without raw errors', async () => {
+    class AttachOverrideRepository extends InMemoryIngestionRepository {
+      failEnqueueCalls = 0;
+
+      constructor(
+        private readonly onAttach: (
+          jobId: string,
+          bullmqJobId: string,
+        ) => Promise<AttachBullMqJobIdResult>,
+        private readonly onFailEnqueue?: (
+          input: FailQueuedJobOnEnqueueErrorInput,
+        ) => Promise<FailQueuedJobOnEnqueueErrorResult>,
+      ) {
+        super();
+      }
+
+      override attachBullMqJobId(
+        jobId: string,
+        bullmqJobId: string,
+      ): Promise<AttachBullMqJobIdResult> {
+        return this.onAttach(jobId, bullmqJobId);
+      }
+
+      override failQueuedJobOnEnqueueError(
+        input: FailQueuedJobOnEnqueueErrorInput,
+      ): Promise<FailQueuedJobOnEnqueueErrorResult> {
+        this.failEnqueueCalls += 1;
+        if (this.onFailEnqueue !== undefined) {
+          return this.onFailEnqueue(input);
+        }
+        return super.failQueuedJobOnEnqueueError(input);
+      }
+    }
+
+    // 1. Successful Redis enqueue + throwing DB attachment -> HTTP 202, stays queued, never marks failed
+    const throwingAttachRepo = new AttachOverrideRepository(() =>
+      Promise.reject(new Error('Connection terminated unexpectedly')),
+    );
+    const { app: attachErrApp, enqueuedPayloads } = await createTestApp({
+      repository: throwingAttachRepo,
+    });
+    const res1 = await attachErrApp.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(res1.statusCode).toBe(202);
+    const body1 = parseJsonBody(res1.body, repoCreateBodySchema);
+    expect(body1.status).toBe('queued');
+    expect(enqueuedPayloads).toHaveLength(1);
+    expect(throwingAttachRepo.failEnqueueCalls).toBe(0);
+    const stored1 = await throwingAttachRepo.findJobWithRepository(body1.jobId);
+    expect(stored1?.repository.status).toBe('queued');
+    expect(stored1?.repository.errorCode).toBeNull();
+    expect(stored1?.job.bullmqJobId).toBeNull();
+
+    // 2. Explicit attachment rejection outcome -> HTTP 202, never invokes failQueuedJobOnEnqueueError
+    const mismatchAttachRepo = new AttachOverrideRepository(() =>
+      Promise.resolve({
+        outcome: 'identity_mismatch',
+        attached: false,
+        reason: 'stored_bullmq_job_id_mismatch',
+      }),
+    );
+    const { app: mismatchApp } = await createTestApp({ repository: mismatchAttachRepo });
+    const res2 = await mismatchApp.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(res2.statusCode).toBe(202);
+    expect(mismatchAttachRepo.failEnqueueCalls).toBe(0);
+
+    // 3. Safe classified logging: raw secrets in attach, enqueue, and cleanup errors never appear in logs
+    const attachSecret = 'SECRET_ATTACH_DB_CRED_777';
+    const enqueueSecret = 'SECRET_REDIS_ENQUEUE_888';
+    const cleanupSecret = 'SECRET_DB_CLEANUP_999';
+    const logs: { level: 'warn' | 'error'; obj: unknown; msg: string }[] = [];
+    const safeSpyLogger = {
+      warn(obj: unknown, msg?: string): void {
+        logs.push({ level: 'warn', obj, msg: msg ?? '' });
+      },
+      error(obj: unknown, msg?: string): void {
+        logs.push({ level: 'error', obj, msg: msg ?? '' });
+      },
+    };
+
+    const attachSecretRepo = new AttachOverrideRepository(() =>
+      Promise.reject(new Error(`postgres://u:${attachSecret}@host/db Connection terminated`)),
+    );
+    const svcAttach = createIngestionService({
+      repository: attachSecretRepo,
+      githubPrecheck: makeFakePrecheck(),
+      enqueuer: {
+        enqueue: (payload) => Promise.resolve({ bullmqJobId: payload.jobId }),
+      },
+      logger: safeSpyLogger,
+    });
+    const outAttach = await svcAttach.ingestRepository({
+      githubUrl: 'https://github.com/pmndrs/zustand',
+    });
+    expect(outAttach.httpStatus).toBe(202);
+    expect(attachSecretRepo.failEnqueueCalls).toBe(0);
+
+    const enqueueSecretRepo = new AttachOverrideRepository(
+      () => Promise.resolve({ outcome: 'attached', attached: true }),
+      () =>
+        Promise.reject(new Error(`postgres://u:${cleanupSecret}@host/db Connection terminated`)),
+    );
+    const expirySecret = 'sensitive-expiry-test-value';
+
+    enqueueSecretRepo.deleteExpiredRepositories = () =>
+      Promise.reject(new Error(`Connection terminated: ${expirySecret}`));
+
+    const svcEnqueue = createIngestionService({
+      repository: enqueueSecretRepo,
+      githubPrecheck: makeFakePrecheck(),
+      enqueuer: {
+        enqueue: () => Promise.reject(new Error(`redis://default:${enqueueSecret}@127.0.0.1:6380`)),
+      },
+      logger: safeSpyLogger,
+    });
+    let caughtQueueErr: unknown;
+
+    try {
+      await svcEnqueue.ingestRepository({
+        githubUrl: 'https://github.com/pmndrs/zustand',
+      });
+    } catch (err) {
+      caughtQueueErr = err;
+    }
+
+    expect(caughtQueueErr).toMatchObject({
+      code: 'QUEUE_UNAVAILABLE',
+      statusCode: 503,
+    });
+
+    expect(caughtQueueErr).toBeInstanceOf(Error);
+
+    if (caughtQueueErr instanceof Error) {
+      expect(caughtQueueErr.cause).toBeUndefined();
+    }
+
+    const serializedLogs = JSON.stringify(logs);
+    expect(serializedLogs).not.toContain(attachSecret);
+    expect(serializedLogs).not.toContain(enqueueSecret);
+    expect(serializedLogs).not.toContain(cleanupSecret);
+    expect(serializedLogs).not.toContain(expirySecret);
+    expect(
+      logs.some((entry) =>
+        entry.msg.includes('Best-effort cleanup of expired repositories failed'),
+      ),
+    ).toBe(true);
+    expect(serializedLogs).toContain('connection_error');
+    expect(serializedLogs).toContain('QUEUE_ENQUEUE_FAILED');
+  });
+
+  it('recovers a legacy-ready repository without early reuse, enqueues replacement, reports superseded historical jobs accurately, and reuses persisted-ready repos', async () => {
+    const t0 = new Date('2026-11-27T10:00:00.000Z');
+    const t1 = new Date('2026-11-27T10:05:00.000Z');
+    let clock = t0;
+
+    const repository = new InMemoryIngestionRepository();
+    const legacy = await repository.createOrGetActive({
+      githubUrl: 'https://github.com/pmndrs/zustand',
+      owner: 'pmndrs',
+      name: 'zustand',
+      defaultBranch: 'main',
+      commitSha: ZUSTAND_SHA,
+      sizeKb: 8253,
+      fileCount: 49,
+      initialStatus: 'ready',
+      now: t0,
+    });
+    expect(isLegacyReadyRepository(legacy.repository)).toBe(true);
+
+    let precheckTreeChecks = 0;
+    const basePrecheck = makeFakePrecheck({ supportedFileCount: 49 });
+    const countingPrecheck: Pick<GitHubPrecheckClient, 'precheckRepository'> = {
+      async precheckRepository(parsedUrl, opts) {
+        const res = await basePrecheck.precheckRepository(parsedUrl, opts);
+        if (res.treeChecked) {
+          precheckTreeChecks += 1;
+        }
+        return res;
+      },
+    };
+
+    const { app, enqueuedPayloads } = await createTestApp({
+      repository,
+      githubPrecheck: countingPrecheck,
+      now: () => clock,
+    });
+
+    // 1. Legacy-ready MUST NOT be early-reused -> tree check runs, legacy is superseded, replacement is enqueued
+    clock = t1;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(res.statusCode).toBe(202);
+    const body = parseJsonBody(res.body, repoCreateBodySchema);
+    expect(body.reused).toBe(false);
+    expect(body.status).toBe('queued');
+    expect(body.repoId).not.toBe(legacy.repository.id);
+    expect(body.jobId).not.toBe(legacy.job.id);
+    expect(precheckTreeChecks).toBe(1);
+    expect(enqueuedPayloads).toHaveLength(1);
+    expect(enqueuedPayloads[0]?.jobId).toBe(body.jobId);
+
+    // 2. Historical job lookup MUST report status: 'superseded' (not 'ready') and emptyJsTs: false
+    const histPoll = await app.inject({
+      method: 'GET',
+      url: `/api/v1/jobs/${legacy.job.id}`,
+    });
+    expect(histPoll.statusCode).toBe(200);
+    const histBody = parseJsonBody(histPoll.body, jobStatusBodySchema);
+    expect(histBody.status).toBe('superseded');
+    expect(histBody.stats.emptyJsTs).toBe(false);
+
+    // 3. Mark replacement as persisted-ready -> subsequent POST reuses early without tree check or enqueue
+    const replacement = repository.repos.get(body.repoId);
+    if (replacement === undefined) {
+      throw new Error('Expected replacement repository');
+    }
+    repository.repos.set(body.repoId, {
+      ...replacement,
+      status: 'ready',
+      graphPersistedAt: t1,
+    });
+
+    const reuseRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(reuseRes.statusCode).toBe(200);
+    const reuseBody = parseJsonBody(reuseRes.body, repoCreateBodySchema);
+    expect(reuseBody.reused).toBe(true);
+    expect(reuseBody.repoId).toBe(body.repoId);
+    expect(precheckTreeChecks).toBe(1);
+    expect(enqueuedPayloads).toHaveLength(1);
+    expect(repository.expiryBumpCount).toBe(1);
+  });
+
+  it('falls back cleanly when a matched ready repo expires before bumpRepositoryExpiry and supports replacement enqueue failure retry', async () => {
+    const t0 = new Date('2026-11-27T10:00:00.000Z');
+    class ExpireOnBumpRepository extends InMemoryIngestionRepository {
+      expiredOnce = false;
+      override bumpRepositoryExpiry(
+        repoId: string,
+        options?: { readonly ttlDays?: number; readonly now?: Date },
+      ): Promise<RepositoryRecord | null> {
+        if (!this.expiredOnce) {
+          this.expiredOnce = true;
+          this.repos.delete(repoId);
+          return Promise.resolve(null);
+        }
+        return super.bumpRepositoryExpiry(repoId, options);
+      }
+    }
+
+    const repository = new ExpireOnBumpRepository();
+    const initial = await repository.createOrGetVerifiedEmpty({
+      githubUrl: 'https://github.com/pmndrs/zustand',
+      owner: 'pmndrs',
+      name: 'zustand',
+      defaultBranch: 'main',
+      commitSha: ZUSTAND_SHA,
+      sizeKb: 100,
+      now: t0,
+    });
+
+    const { app, enqueuedPayloads } = await createTestApp({
+      repository,
+      githubPrecheck: makeFakePrecheck({ supportedFileCount: 12 }),
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(res.statusCode).toBe(202);
+    const body = parseJsonBody(res.body, repoCreateBodySchema);
+    expect(body.reused).toBe(false);
+    expect(body.repoId).not.toBe(initial.repository.id);
+    expect(enqueuedPayloads).toHaveLength(1);
+
+    // Replacement enqueue failure leaves superseded legacy row intact and allows retry
+    const retryRepo = new InMemoryIngestionRepository();
+    const legacyRow = await retryRepo.createOrGetActive({
+      githubUrl: 'https://github.com/pmndrs/zustand',
+      owner: 'pmndrs',
+      name: 'zustand',
+      defaultBranch: 'main',
+      commitSha: ZUSTAND_SHA,
+      sizeKb: 100,
+      fileCount: 10,
+      initialStatus: 'ready',
+      now: t0,
+    });
+    let enqueueAttempts = 0;
+    const { app: retryApp } = await createTestApp({
+      repository: retryRepo,
+      enqueuer: {
+        enqueue(payload) {
+          enqueueAttempts += 1;
+          if (enqueueAttempts === 1) {
+            return Promise.reject(new Error('transient redis down'));
+          }
+          return Promise.resolve({ bullmqJobId: payload.jobId });
+        },
+      },
+    });
+
+    const failRes = await retryApp.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(failRes.statusCode).toBe(503);
+    expect(retryRepo.repos.get(legacyRow.repository.id)?.status).toBe('superseded');
+
+    const okRetryRes = await retryApp.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(okRetryRes.statusCode).toBe(202);
+    const okRetryBody = parseJsonBody(okRetryRes.body, repoCreateBodySchema);
+    expect(okRetryBody.status).toBe('queued');
+    expect(okRetryBody.reused).toBe(false);
+  });
+
+  it('preserves isSample and null expiresAt on public retries after a recovered sample repository fails', async () => {
+    const t0 = new Date('2026-11-27T11:00:00.000Z');
+    const repository = new InMemoryIngestionRepository();
+
+    const legacySample = await repository.createOrGetActive({
+      githubUrl: 'https://github.com/pmndrs/zustand',
+      owner: 'pmndrs',
+      name: 'zustand',
+      defaultBranch: 'main',
+      commitSha: ZUSTAND_SHA,
+      sizeKb: 8253,
+      fileCount: 49,
+      isSample: true,
+      initialStatus: 'ready',
+      now: t0,
+    });
+    expect(legacySample.repository.isSample).toBe(true);
+    expect(legacySample.repository.expiresAt).toBeNull();
+
+    let enqueueCalls = 0;
+    const { app } = await createTestApp({
+      repository,
+      enqueuer: {
+        enqueue(payload) {
+          enqueueCalls += 1;
+          if (enqueueCalls === 1) {
+            return Promise.reject(new Error('transient redis failure on first recovery'));
+          }
+          return Promise.resolve({ bullmqJobId: payload.jobId });
+        },
+      },
+    });
+
+    // 1. First public POST triggers legacy sample recovery, then fails enqueueing -> 503
+    const firstRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(firstRes.statusCode).toBe(503);
+    expect(repository.repos.get(legacySample.repository.id)?.status).toBe('superseded');
+
+    const failedRecovery = [...repository.repos.values()].find(
+      (r) => r.id !== legacySample.repository.id,
+    );
+    expect(failedRecovery?.status).toBe('failed');
+    expect(failedRecovery?.isSample).toBe(true);
+    expect(failedRecovery?.expiresAt).toBeNull();
+
+    // 2. Subsequent public retry (without isSample flag) MUST still preserve isSample=true and expiresAt=null
+    const retryRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { githubUrl: 'https://github.com/pmndrs/zustand' },
+    });
+    expect(retryRes.statusCode).toBe(202);
+    const retryBody = parseJsonBody(retryRes.body, repoCreateBodySchema);
+    expect(retryBody.status).toBe('queued');
+    expect(retryBody.reused).toBe(false);
+    expect(retryBody.repoId).not.toBe(legacySample.repository.id);
+    expect(retryBody.repoId).not.toBe(failedRecovery?.id);
+
+    const retriedRecord = repository.repos.get(retryBody.repoId);
+    expect(retriedRecord?.isSample).toBe(true);
+    expect(retriedRecord?.expiresAt).toBeNull();
   });
 });

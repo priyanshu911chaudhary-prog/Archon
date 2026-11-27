@@ -112,7 +112,7 @@ describe('IngestionRepository (PostgreSQL integration)', () => {
     expect(jobRows).toHaveLength(1);
   });
 
-  it('enforces conditional transitions (no overwrite after ready/failed) and allows retrying after failed', async () => {
+  it('enforces conditional transitions (no overwrite after ready/failed), attaches BullMQ job ID, and allows retrying after failed', async () => {
     const sha = '1111111111111111111111111111111111111111';
     const t0 = new Date('2026-11-21T10:00:00.000Z');
     const t1 = new Date('2026-11-21T10:00:05.000Z');
@@ -130,25 +130,31 @@ describe('IngestionRepository (PostgreSQL integration)', () => {
     });
     expect(firstAttempt.created).toBe(true);
 
-    const cloning = await repo.transitionJobStage({
+    const attached = await repo.attachBullMqJobId(firstAttempt.job.id, firstAttempt.job.id);
+    expect(attached.attached).toBe(true);
+
+    const claimed = await repo.claimIngestionAttempt({
       repoId: firstAttempt.repository.id,
       jobId: firstAttempt.job.id,
-      toStatus: 'cloning',
+      bullmqJobId: firstAttempt.job.id,
+      commitSha: sha,
+      attemptGeneration: 1,
       progressPct: 25,
-      bullmqJobId: 'bullmq-1',
       now: t1,
     });
-    expect(cloning.applied).toBe(true);
-    if (cloning.applied) {
-      expect(cloning.repository.status).toBe('cloning');
-      expect(cloning.repository.updatedAt.getTime()).toBe(t1.getTime());
-      expect(cloning.job.bullmqJobId).toBe('bullmq-1');
-      expect(cloning.job.startedAt?.getTime()).toBe(t1.getTime());
+    expect(claimed.outcome).toBe('claimed');
+    if (claimed.outcome !== 'claimed') {
+      throw new Error('Expected claimed ownership');
     }
+    expect(claimed.repository.status).toBe('cloning');
+    expect(claimed.repository.updatedAt.getTime()).toBe(t1.getTime());
+    expect(claimed.job.bullmqJobId).toBe(firstAttempt.job.id);
+    expect(claimed.job.attemptGeneration).toBe(1);
+    expect(claimed.job.startedAt?.getTime()).toBe(t1.getTime());
 
-    const failed = await repo.transitionJobStage({
-      repoId: firstAttempt.repository.id,
-      jobId: firstAttempt.job.id,
+    const ownership = claimed.ownership;
+
+    const failed = await repo.transitionJobStage(ownership, {
       toStatus: 'failed',
       progressPct: 25,
       errorCode: 'TARBALL_ERROR',
@@ -163,15 +169,14 @@ describe('IngestionRepository (PostgreSQL integration)', () => {
       expect(failed.job.durationMs).toBe(7000);
     }
 
-    // Terminal row must NOT transition again
-    const lateTransition = await repo.transitionJobStage({
-      repoId: firstAttempt.repository.id,
-      jobId: firstAttempt.job.id,
-      toStatus: 'ready',
-      progressPct: 100,
+    // Terminal row must NOT transition or publish again
+    const lateTransition = await repo.transitionJobStage(ownership, {
+      toStatus: 'parsing',
+      progressPct: 60,
       now: t3,
     });
     expect(lateTransition.applied).toBe(false);
+    expect(lateTransition.outcome).toBe('terminal');
 
     // Failed row MUST NOT block a retry for the exact same (owner, name, commitSha)
     const retryAttempt = await repo.createOrGetActive({
@@ -191,24 +196,23 @@ describe('IngestionRepository (PostgreSQL integration)', () => {
     const t0 = new Date('2026-11-21T08:00:00.000Z');
     const tLater = new Date('2026-11-23T08:00:00.000Z');
 
-    // User repo (ready immediately as emptyJsTs = 0 supported files)
-    const userRepo = await repo.createOrGetActive({
+    // User repo (authoritatively verified emptyJsTs = 0 supported files -> persisted ready)
+    const userRepo = await repo.createOrGetVerifiedEmpty({
       githubUrl: 'https://github.com/acme/python-only',
       owner: 'acme',
       name: 'python-only',
       defaultBranch: 'main',
       commitSha: '2222222222222222222222222222222222222222',
       sizeKb: 50,
-      fileCount: 0,
-      initialStatus: 'ready',
       ttlDays: 7,
       now: t0,
     });
     expect(userRepo.created).toBe(true);
+    expect(userRepo.repository.graphPersistedAt?.getTime()).toBe(t0.getTime());
     expect(isEmptyJsTsRepository(userRepo.repository)).toBe(true);
     const initialExpiryMs = userRepo.repository.expiresAt?.getTime() ?? 0;
 
-    // Reusing a ready user repo bumps expires_at
+    // Reusing a persisted-ready user repo bumps expires_at without replacing it
     const reusedUser = await repo.createOrGetActive({
       githubUrl: 'https://github.com/acme/python-only',
       owner: 'acme',
@@ -223,7 +227,7 @@ describe('IngestionRepository (PostgreSQL integration)', () => {
     expect(reusedUser.repository.id).toBe(userRepo.repository.id);
     expect((reusedUser.repository.expiresAt?.getTime() ?? 0) > initialExpiryMs).toBe(true);
 
-    // Sample repo stays expires_at = NULL even on reuse
+    // Persisted-ready sample repo stays expires_at = NULL even on reuse
     const sampleRepo = await repo.createOrGetActive({
       githubUrl: 'https://github.com/shadcn-ui/taxonomy',
       owner: 'shadcn-ui',
@@ -236,6 +240,15 @@ describe('IngestionRepository (PostgreSQL integration)', () => {
       initialStatus: 'ready',
       now: t0,
     });
+    const dbClient = client;
+    if (dbClient === undefined) {
+      throw new Error('Expected initialized DB client');
+    }
+    await dbClient.db
+      .update(repositories)
+      .set({ graphPersistedAt: t0 })
+      .where(eq(repositories.id, sampleRepo.repository.id));
+
     expect(sampleRepo.repository.isSample).toBe(true);
     expect(sampleRepo.repository.expiresAt).toBeNull();
 
@@ -250,10 +263,13 @@ describe('IngestionRepository (PostgreSQL integration)', () => {
       now: tLater,
     });
     expect(reusedSample.created).toBe(false);
+    expect(reusedSample.repository.id).toBe(sampleRepo.repository.id);
     expect(reusedSample.repository.expiresAt).toBeNull();
   });
 
   it('supports heartbeat touch and sweeps only stale non-terminal jobs to failed with JOB_TIMEOUT', async () => {
+    const shaOne = '3333333333333333333333333333333333333333';
+    const shaTwo = '4444444444444444444444444444444444444444';
     const tStart = new Date('2026-11-21T09:00:00.000Z');
     const tHeartbeat = new Date('2026-11-21T09:09:00.000Z');
     const tSweep = new Date('2026-11-21T09:11:00.000Z'); // 11m after start, 2m after heartbeat
@@ -263,7 +279,7 @@ describe('IngestionRepository (PostgreSQL integration)', () => {
       owner: 'acme',
       name: 'stale-repo',
       defaultBranch: 'main',
-      commitSha: '3333333333333333333333333333333333333333',
+      commitSha: shaOne,
       sizeKb: 20,
       now: tStart,
     });
@@ -273,14 +289,43 @@ describe('IngestionRepository (PostgreSQL integration)', () => {
       owner: 'acme',
       name: 'active-repo',
       defaultBranch: 'main',
-      commitSha: '4444444444444444444444444444444444444444',
+      commitSha: shaTwo,
       sizeKb: 20,
       now: tStart,
     });
 
-    const beat = await repo.touchJobHeartbeat(activeOne.repository.id, tHeartbeat);
+    const claimedStale = await repo.claimIngestionAttempt({
+      repoId: staleOne.repository.id,
+      jobId: staleOne.job.id,
+      bullmqJobId: staleOne.job.id,
+      commitSha: shaOne,
+      attemptGeneration: 1,
+      now: tStart,
+    });
+    expect(claimedStale.outcome).toBe('claimed');
+    if (claimedStale.outcome !== 'claimed') {
+      throw new Error('Expected claimed staleOne ownership');
+    }
+
+    const claimedActive = await repo.claimIngestionAttempt({
+      repoId: activeOne.repository.id,
+      jobId: activeOne.job.id,
+      bullmqJobId: activeOne.job.id,
+      commitSha: shaTwo,
+      attemptGeneration: 1,
+      now: tStart,
+    });
+    expect(claimedActive.outcome).toBe('claimed');
+    if (claimedActive.outcome !== 'claimed') {
+      throw new Error('Expected claimed activeOne ownership');
+    }
+
+    const beat = await repo.touchJobHeartbeat(claimedActive.ownership, tHeartbeat);
+    expect(beat.outcome).toBe('updated');
     expect(beat.updated).toBe(true);
-    expect(beat.updatedAt?.getTime()).toBe(tHeartbeat.getTime());
+    if (beat.outcome === 'updated') {
+      expect(beat.updatedAt.getTime()).toBe(tHeartbeat.getTime());
+    }
 
     // 10-minute stale threshold: staleOne is 11m old (swept), activeOne is 2m old (safe)
     const swept = await repo.sweepStaleJobs({
@@ -296,8 +341,17 @@ describe('IngestionRepository (PostgreSQL integration)', () => {
     expect(staleLoaded?.job.stage).toBe('failed');
     expect(staleLoaded?.job.errorDetail).toBe('JOB_TIMEOUT');
 
-    // Heartbeat on a terminal repo is a no-op
-    const deadBeat = await repo.touchJobHeartbeat(staleOne.repository.id, tSweep);
+    const activeLoaded = await repo.findJobWithRepository(activeOne.job.id);
+    expect(activeLoaded?.repository.status).toBe('cloning');
+    expect(activeLoaded?.job.stage).toBe('cloning');
+    expect(activeLoaded?.repository.updatedAt.getTime()).toBe(tHeartbeat.getTime());
+
+    // Heartbeat on swept terminal staleOne returns terminal without mutating updatedAt
+    const tAfterSweep = new Date('2026-11-21T09:12:00.000Z');
+    const deadBeat = await repo.touchJobHeartbeat(claimedStale.ownership, tAfterSweep);
     expect(deadBeat.updated).toBe(false);
+    expect(deadBeat.outcome).toBe('terminal');
+    const staleAfterDeadBeat = await repo.findJobWithRepository(staleOne.job.id);
+    expect(staleAfterDeadBeat?.repository.updatedAt.getTime()).toBe(tSweep.getTime());
   });
 });

@@ -103,7 +103,6 @@ export {
   ParserIntegrationError,
   classifyParserRunnerError,
   createProductionParserAdapter,
-  noopAnalysisResultHandoff,
   preflightProductionParserEntrypoint,
   resolveProductionParserLimitsFromEnv,
   validateProductionParserLimits,

@@ -47,6 +47,7 @@ function makeDummyJob(): IngestionProcessorJob {
       commitSha: '9fed2eb2f3af672da9f7bf694b996df3831fc207',
     },
     attemptsMade: 0,
+    attemptsStarted: 1,
     opts: { attempts: 2 },
   };
 }

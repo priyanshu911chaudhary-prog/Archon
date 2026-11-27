@@ -1,17 +1,29 @@
-import type {
-  IngestionJobRecord,
-  IngestionRepository,
-  RepositoryRecord,
-  RepositoryStatus,
-  TouchHeartbeatResult,
-  TransitionJobStageInput,
-  TransitionJobStageResult,
+import {
+  DbError,
+  GraphPersistenceValidationError,
+  GraphPublicationAbortedError,
+  PG_TRANSACTION_RESOLUTION_UNKNOWN_CODE,
+  validateClaimIngestionAttemptInput,
+  type ClaimIngestionAttemptInput,
+  type ClaimIngestionAttemptResult,
+  type IngestionAttemptOwnership,
+  type IngestionJobRecord,
+  type IngestionRepository,
+  type PublishRepositoryGraphInput,
+  type PublishRepositoryGraphResult,
+  type ReconcilePublishedAttemptResult,
+  type RepositoryRecord,
+  type RepositoryStatus,
+  type TouchHeartbeatResult,
+  type TransitionJobStageInput,
+  type TransitionJobStageResult,
 } from '@archon/db';
 import type { AnalysisOutput } from '@archon/shared';
 import { UnrecoverableError } from 'bullmq';
 import { describe, expect, it } from 'vitest';
 import { TarballExtractionError } from './extractor/errors.js';
 import type { ExtractedRepoWorkspace } from './extractor/github-tarball.js';
+import { createWorkerServiceLifecycle } from './lifecycle.js';
 import {
   ParserIntegrationError,
   classifyParserRunnerError,
@@ -29,7 +41,6 @@ import {
   type IngestionParserAdapter,
   type IngestionProcessorJob,
 } from './processor.js';
-import { createWorkerServiceLifecycle } from './lifecycle.js';
 
 const SAMPLE_JOB_DATA = {
   repoId: '00000000-0000-4000-8000-000000000001',
@@ -52,6 +63,7 @@ const SAMPLE_WORKSPACE: ExtractedRepoWorkspace = {
     configFilesCount: 2,
     skippedFilesCount: 3,
     oversizedSkippedFilesCount: 0,
+    oversizedSupportedFilesCount: 0,
   },
 };
 
@@ -61,8 +73,8 @@ function makeFakeValidatedResult(): ValidatedAnalysisResult {
     edges: [],
     warnings: [],
     stats: {
-      discoveredFilesCount: 2,
-      parsedFilesCount: 2,
+      discoveredFilesCount: 0,
+      parsedFilesCount: 0,
       skippedSyntaxErrorFilesCount: 0,
       skippedOversizedFilesCount: 0,
       configFilesCount: 2,
@@ -138,13 +150,17 @@ function makeFakeParserAdapter(
   };
 }
 
-function makeFakeRepoAndJob(status: RepositoryStatus): {
+function makeFakeRepoAndJob(
+  status: RepositoryStatus,
+  attemptGeneration = 1,
+): {
   repository: RepositoryRecord;
   job: IngestionJobRecord;
 } {
   const now = new Date('2026-11-23T06:00:00.000Z');
   return {
     repository: {
+      graphPersistedAt: null,
       id: SAMPLE_JOB_DATA.repoId,
       githubUrl: 'https://github.com/pmndrs/zustand',
       owner: SAMPLE_JOB_DATA.owner,
@@ -167,7 +183,8 @@ function makeFakeRepoAndJob(status: RepositoryStatus): {
       id: SAMPLE_JOB_DATA.jobId,
       repoId: SAMPLE_JOB_DATA.repoId,
       bullmqJobId: SAMPLE_JOB_DATA.jobId,
-      stage: status,
+      stage: status === 'superseded' ? 'ready' : status,
+      attemptGeneration,
       progressPct: 0,
       startedAt: now,
       finishedAt: null,
@@ -180,40 +197,145 @@ function makeFakeRepoAndJob(status: RepositoryStatus): {
 
 function makeFakeRepository(
   options: {
-    readonly rejectAtStage?: RepositoryStatus;
-    readonly onHeartbeat?: () => Promise<TouchHeartbeatResult>;
-    readonly onTransition?: (input: TransitionJobStageInput) => void;
+    readonly onClaim?: (input: ClaimIngestionAttemptInput) => Promise<ClaimIngestionAttemptResult>;
+    readonly rejectAtStage?: TransitionJobStageInput['toStatus'];
+    readonly rejectOutcome?: 'ownership_lost' | 'terminal';
+    readonly onHeartbeat?: (
+      ownership: IngestionAttemptOwnership,
+      now?: Date,
+    ) => Promise<TouchHeartbeatResult>;
+    readonly onTransition?: (
+      ownership: IngestionAttemptOwnership,
+      input: TransitionJobStageInput,
+    ) => Promise<TransitionJobStageResult> | undefined;
+    readonly onPublish?: (
+      ownership: IngestionAttemptOwnership,
+      input: PublishRepositoryGraphInput,
+    ) => Promise<PublishRepositoryGraphResult> | undefined;
+    readonly onReconcile?: (
+      ownership: IngestionAttemptOwnership,
+    ) => Promise<ReconcilePublishedAttemptResult>;
   } = {},
 ) {
-  const transitions: TransitionJobStageInput[] = [];
+  const claims: ClaimIngestionAttemptInput[] = [];
+  const transitions: {
+    readonly ownership: IngestionAttemptOwnership;
+    readonly input: TransitionJobStageInput;
+  }[] = [];
+  const publications: {
+    readonly ownership: IngestionAttemptOwnership;
+    readonly input: PublishRepositoryGraphInput;
+  }[] = [];
+  const reconciliations: IngestionAttemptOwnership[] = [];
+  const heartbeatNowArgs: (Date | undefined)[] = [];
   let heartbeatCount = 0;
 
-  const repository: Pick<IngestionRepository, 'transitionJobStage' | 'touchJobHeartbeat'> = {
-    transitionJobStage(input): Promise<TransitionJobStageResult> {
-      transitions.push(input);
-      options.onTransition?.(input);
-      if (options.rejectAtStage === input.toStatus) {
-        return Promise.resolve({ applied: false });
+  const repository: Pick<
+    IngestionRepository,
+    | 'claimIngestionAttempt'
+    | 'transitionJobStage'
+    | 'touchJobHeartbeat'
+    | 'publishRepositoryGraph'
+    | 'reconcilePublishedAttempt'
+  > = {
+    claimIngestionAttempt(input): Promise<ClaimIngestionAttemptResult> {
+      claims.push(input);
+      if (options.onClaim !== undefined) {
+        return options.onClaim(input);
       }
-      const pair = makeFakeRepoAndJob(input.toStatus);
+      const validated = validateClaimIngestionAttemptInput(input);
+      if (!validated.ok) {
+        return Promise.resolve(validated.rejection);
+      }
+      const pair = makeFakeRepoAndJob('cloning', validated.ownership.attemptGeneration);
       return Promise.resolve({
+        outcome: 'claimed',
+        ownership: validated.ownership,
+        repository: pair.repository,
+        job: pair.job,
+      });
+    },
+    transitionJobStage(ownership, input): Promise<TransitionJobStageResult> {
+      transitions.push({ ownership, input });
+      const custom = options.onTransition?.(ownership, input);
+      if (custom !== undefined) {
+        return custom;
+      }
+      if (options.rejectAtStage === input.toStatus) {
+        if (options.rejectOutcome === 'ownership_lost') {
+          return Promise.resolve({
+            outcome: 'ownership_lost',
+            applied: false,
+            storedGeneration: ownership.attemptGeneration + 1,
+            expectedGeneration: ownership.attemptGeneration,
+          });
+        }
+        return Promise.resolve({
+          outcome: 'terminal',
+          applied: false,
+          status: 'failed',
+        });
+      }
+      const pair = makeFakeRepoAndJob(input.toStatus, ownership.attemptGeneration);
+      return Promise.resolve({
+        outcome: 'applied',
         applied: true,
         repository: pair.repository,
         job: pair.job,
       });
     },
-    touchJobHeartbeat(_repoId, now): Promise<TouchHeartbeatResult> {
+    touchJobHeartbeat(ownership, now): Promise<TouchHeartbeatResult> {
       heartbeatCount += 1;
-      if (options.onHeartbeat) {
-        return options.onHeartbeat();
+      heartbeatNowArgs.push(now);
+      if (options.onHeartbeat !== undefined) {
+        return options.onHeartbeat(ownership, now);
       }
-      return Promise.resolve({ updated: true, updatedAt: now ?? new Date() });
+      return Promise.resolve({
+        outcome: 'updated',
+        updated: true,
+        updatedAt: now ?? new Date(),
+      });
+    },
+    publishRepositoryGraph(ownership, input): Promise<PublishRepositoryGraphResult> {
+      publications.push({ ownership, input });
+      const custom = options.onPublish?.(ownership, input);
+      if (custom !== undefined) {
+        return custom;
+      }
+      const pair = makeFakeRepoAndJob('ready', ownership.attemptGeneration);
+      const now = input.now ?? new Date();
+      return Promise.resolve({
+        outcome: 'published',
+        applied: true,
+        repository: { ...pair.repository, graphPersistedAt: now },
+        job: { ...pair.job, progressPct: 100 },
+        persistedNodeCount: input.output.nodes.length,
+        persistedEdgeCount: input.output.edges.length,
+        nodeBatches: input.output.nodes.length > 0 ? 1 : 0,
+        edgeBatches: input.output.edges.length > 0 ? 1 : 0,
+      });
+    },
+    reconcilePublishedAttempt(ownership): Promise<ReconcilePublishedAttemptResult> {
+      reconciliations.push(ownership);
+      if (options.onReconcile !== undefined) {
+        return options.onReconcile(ownership);
+      }
+      const pair = makeFakeRepoAndJob('building_graph', ownership.attemptGeneration);
+      return Promise.resolve({
+        outcome: 'still_owned_unpublished',
+        repository: pair.repository,
+        job: pair.job,
+      });
     },
   };
 
   return {
     repository,
+    claims,
     transitions,
+    publications,
+    reconciliations,
+    heartbeatNowArgs,
     getHeartbeatCount: () => heartbeatCount,
   };
 }
@@ -239,6 +361,7 @@ function makeJob(overrides: Partial<IngestionProcessorJob> = {}): IngestionProce
     id: SAMPLE_JOB_DATA.jobId,
     data: SAMPLE_JOB_DATA,
     attemptsMade: 0,
+    attemptsStarted: 1,
     opts: { attempts: 2 },
     ...overrides,
   };
@@ -280,7 +403,7 @@ describe('isFinalJobAttempt and classifyIngestionError', () => {
     expect(isFinalJobAttempt({ attemptsMade: 0, opts: {} })).toBe(true);
   });
 
-  it('classifies non-retryable vs retryable extraction, parser, cancellation, and generic errors safely', () => {
+  it('classifies non-retryable vs retryable extraction, parser, DB, cancellation, and generic errors safely', () => {
     const nonRetryable = [
       new TarballExtractionError({ code: 'TARBALL_SECURITY_VIOLATION', message: 'symlink' }),
       new TarballExtractionError({ code: 'TARBALL_SIZE_LIMIT_EXCEEDED', message: 'too big' }),
@@ -300,8 +423,8 @@ describe('isFinalJobAttempt and classifyIngestionError', () => {
       makeParserIntegrationError('RESPONSE_TOO_LARGE', { retryable: false }),
       makeParserIntegrationError('INVALID_RESPONSE', { retryable: false }),
       makeParserIntegrationError('CHILD_INTERNAL_ERROR', { retryable: false }),
+      new DbError('DB_VALIDATION_ERROR', 'bad input'),
     ];
-
     for (const err of nonRetryable) {
       expect(classifyIngestionError(err).retryable).toBe(false);
     }
@@ -327,10 +450,18 @@ describe('isFinalJobAttempt and classifyIngestionError', () => {
       new IngestionCancelledError(),
       new Error('unexpected runtime failure'),
     ];
-
     for (const err of retryable) {
       expect(classifyIngestionError(err).retryable).toBe(true);
     }
+
+    const uncertainDb = new DbError('DB_QUERY_ERROR', 'tx unknown', {
+      pgCode: PG_TRANSACTION_RESOLUTION_UNKNOWN_CODE,
+    });
+    expect(classifyIngestionError(uncertainDb)).toMatchObject({
+      retryable: true,
+      errorCode: 'DATABASE_ERROR',
+      commitOutcomeUncertain: true,
+    });
 
     const generic = classifyIngestionError(new Error('SECRET_SNIPPET_IN_EXCEPTION'));
     expect(generic.errorCode).toBe('WORKER_ERROR');
@@ -340,38 +471,43 @@ describe('isFinalJobAttempt and classifyIngestionError', () => {
 });
 
 describe('createIngestionJobProcessor', () => {
-  it('executes cloning -> parsing -> parserAdapter -> building_graph -> handoff -> ready with exact inventory and AbortSignal propagation', async () => {
+  it('claims ownership then executes parsing -> parserAdapter -> building_graph -> handoff -> ready with exact inventory and AbortSignal propagation', async () => {
     const order: string[] = [];
-    const { repository, transitions } = makeFakeRepository({
-      onTransition: (t) => {
+    const { repository, claims, transitions, publications } = makeFakeRepository({
+      onTransition: (_ownership, t) => {
         order.push(`db:${t.toStatus}`);
+        return undefined;
+      },
+      onPublish: (_ownership, input) => {
+        order.push('db:publish_ready');
+        capturedSignals.push(input.signal);
+        return undefined;
       },
     });
     const { logger } = makeFakeLogger();
     const shutdownCtrl = new AbortController();
 
-    const capturedExtractSignals: (AbortSignal | undefined)[] = [];
+    const capturedSignals: (AbortSignal | undefined)[] = [];
     const capturedParserInputs: {
       rootDir: string;
       supportedFiles: readonly string[];
       configFiles: readonly string[];
-      signal: AbortSignal | undefined;
     }[] = [];
     const capturedHandoffs: AnalysisResultHandoffContext[] = [];
 
     const fakeExtract: ExtractRepoFn = async (opts, callback) => {
-      capturedExtractSignals.push(opts.signal);
+      capturedSignals.push(opts.signal);
       order.push('extract');
       return callback(SAMPLE_WORKSPACE);
     };
 
     const parserAdapter = makeFakeParserAdapter((workspace, opts) => {
       order.push('parse');
+      capturedSignals.push(opts?.signal);
       capturedParserInputs.push({
         rootDir: workspace.rootDir,
         supportedFiles: workspace.supportedFiles,
         configFiles: workspace.configFiles,
-        signal: opts?.signal,
       });
       return Promise.resolve(makeFakeValidatedResult());
     });
@@ -385,44 +521,85 @@ describe('createIngestionJobProcessor', () => {
       extractRepo: fakeExtract,
       parserAdapter,
       shutdownSignal: shutdownCtrl.signal,
-      analysisResultHandoff: (ctx) => {
+      beforeGraphPublish: (ctx) => {
         order.push('handoff');
+        capturedSignals.push(ctx.signal);
         capturedHandoffs.push(ctx);
         return Promise.resolve();
       },
     });
 
-    await processJob(makeJob());
+    await processJob(makeJob({ attemptsStarted: 2 }));
 
+    expect(claims).toHaveLength(1);
+    expect(claims[0]?.attemptGeneration).toBe(2);
     expect(order).toEqual([
-      'db:cloning',
       'extract',
       'db:parsing',
       'parse',
       'db:building_graph',
       'handoff',
-      'db:ready',
+      'db:publish_ready',
     ]);
-    expect(transitions.map((t) => [t.toStatus, t.progressPct])).toEqual([
-      ['cloning', STAGE_PROGRESS.cloning],
-      ['parsing', STAGE_PROGRESS.parsing],
-      ['building_graph', STAGE_PROGRESS.buildingGraph],
-      ['ready', STAGE_PROGRESS.ready],
+    expect(
+      transitions.map((t) => [
+        t.ownership.attemptGeneration,
+        t.input.toStatus,
+        t.input.progressPct,
+      ]),
+    ).toEqual([
+      [2, 'parsing', STAGE_PROGRESS.parsing],
+      [2, 'building_graph', STAGE_PROGRESS.buildingGraph],
     ]);
-    expect(transitions[1]?.fileCount).toBe(2);
-    expect(transitions[1]?.skippedFilesCount).toBe(3);
-    expect(capturedExtractSignals).toEqual([shutdownCtrl.signal]);
+    expect(publications).toHaveLength(1);
+    expect(publications[0]?.ownership.attemptGeneration).toBe(2);
+    expect(publications[0]?.input.extractionStats).toEqual({
+      supportedFilesCount: SAMPLE_WORKSPACE.stats.supportedFilesCount,
+      skippedFilesCount: SAMPLE_WORKSPACE.stats.skippedFilesCount,
+      oversizedSupportedFilesCount: SAMPLE_WORKSPACE.stats.oversizedSupportedFilesCount,
+      oversizedSkippedFilesCount: SAMPLE_WORKSPACE.stats.oversizedSkippedFilesCount,
+    });
+    expect(transitions[0]?.input.fileCount).toBe(2);
+    expect(transitions[0]?.input.skippedFilesCount).toBe(3);
     expect(capturedParserInputs).toEqual([
       {
         rootDir: SAMPLE_WORKSPACE.rootDir,
         supportedFiles: SAMPLE_WORKSPACE.supportedFiles,
         configFiles: SAMPLE_WORKSPACE.configFiles,
-        signal: shutdownCtrl.signal,
       },
     ]);
+    expect(capturedSignals).toHaveLength(4);
+    expect(capturedSignals.every((s) => s !== undefined && !s.aborted)).toBe(true);
     expect(capturedHandoffs).toHaveLength(1);
     expect(capturedHandoffs[0]?.repositoryId).toBe(SAMPLE_JOB_DATA.repoId);
-    expect(capturedHandoffs[0]?.signal).toBe(shutdownCtrl.signal);
+  });
+
+  it('omits explicit now timestamp on DB mutations when deps.now is not provided (preserving post-lock DB timestamps)', async () => {
+    const { repository, claims, transitions, publications, heartbeatNowArgs } =
+      makeFakeRepository();
+    const processJob = createIngestionJobProcessor({
+      repository,
+      logger: makeFakeLogger().logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 10,
+      extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+      parserAdapter: makeFakeParserAdapter(
+        () =>
+          new Promise<ValidatedAnalysisResult>((resolve) => {
+            setTimeout(() => {
+              resolve(makeFakeValidatedResult());
+            }, 30);
+          }),
+      ),
+    });
+
+    await processJob(makeJob());
+    expect(claims[0]?.now).toBeUndefined();
+    expect(transitions.every((t) => t.input.now === undefined)).toBe(true);
+    expect(publications[0]?.input.now).toBeUndefined();
+    expect(heartbeatNowArgs.length).toBeGreaterThanOrEqual(1);
+    expect(heartbeatNowArgs.every((arg) => arg === undefined)).toBe(true);
   });
 
   it('starts heartbeat during processing, drains outstanding heartbeat operation before returning, and logs heartbeat failures safely', async () => {
@@ -439,7 +616,7 @@ describe('createIngestionJobProcessor', () => {
         return new Promise<TouchHeartbeatResult>((resolve) => {
           resolveSlowHeartbeat = () => {
             heartbeatFinished = true;
-            resolve({ updated: true, updatedAt: new Date() });
+            resolve({ outcome: 'updated', updated: true, updatedAt: new Date() });
           };
         });
       },
@@ -469,18 +646,15 @@ describe('createIngestionJobProcessor', () => {
       jobSettled = true;
     });
 
-    // Wait until heartbeat #2 is in-flight
     while (resolveSlowHeartbeat === undefined || releaseParse === undefined) {
       await new Promise((r) => setTimeout(r, 5));
     }
 
-    // Complete parsing while heartbeat #2 is still in-flight -> processor MUST wait for heartbeat drain
     releaseParse();
     await new Promise((r) => setTimeout(r, 25));
     expect(heartbeatFinished).toBe(false);
     expect(jobSettled).toBe(false);
 
-    // Resolve in-flight heartbeat -> processor finishes cleanly and schedules no more ticks
     resolveSlowHeartbeat();
     await jobPromise;
     expect(jobSettled).toBe(true);
@@ -497,15 +671,14 @@ describe('createIngestionJobProcessor', () => {
     const { repository } = makeFakeRepository({
       onHeartbeat: () => {
         heartbeatCalls += 1;
-        return Promise.resolve({ updated: true, updatedAt: new Date() });
+        return Promise.resolve({ outcome: 'updated', updated: true, updatedAt: new Date() });
       },
     });
-    const { logger } = makeFakeLogger();
     let rejectLateParse: ((err: Error) => void) | undefined;
 
     const processJob = createIngestionJobProcessor({
       repository,
-      logger,
+      logger: makeFakeLogger().logger,
       maxSupportedFiles: 500,
       maxRepoSizeMb: 50,
       heartbeatIntervalMs: 10,
@@ -533,16 +706,13 @@ describe('createIngestionJobProcessor', () => {
       await new Promise((r) => setTimeout(r, 5));
     }
 
-    // Fatal signal fires while parser promise remains indefinitely pending
     fatalCtrl.abort();
     const countAfterFatal = heartbeatCalls;
     await new Promise((r) => setTimeout(r, 45));
 
-    // Heartbeat scheduling stopped immediately AND pending parser promise did NOT settle prematurely
     expect(heartbeatCalls).toBe(countAfterFatal);
     expect(jobSettled).toBe(false);
 
-    // Clean up test promise via deferred rejection
     rejectLateParse(
       makeParserIntegrationError('FATAL_TERMINATION_UNCONFIRMED', {
         retryable: false,
@@ -554,7 +724,6 @@ describe('createIngestionJobProcessor', () => {
 
   it('marks Postgres failed immediately and throws UnrecoverableError on non-retryable extraction errors (preserving cause)', async () => {
     const { repository, transitions } = makeFakeRepository();
-    const { logger } = makeFakeLogger();
     const securityErr = new TarballExtractionError({
       code: 'TARBALL_SECURITY_VIOLATION',
       message: 'Symlink rejected',
@@ -562,7 +731,7 @@ describe('createIngestionJobProcessor', () => {
 
     const processJob = createIngestionJobProcessor({
       repository,
-      logger,
+      logger: makeFakeLogger().logger,
       maxSupportedFiles: 500,
       maxRepoSizeMb: 50,
       heartbeatIntervalMs: 0,
@@ -583,8 +752,8 @@ describe('createIngestionJobProcessor', () => {
     }
 
     const lastTransition = transitions[transitions.length - 1];
-    expect(lastTransition?.toStatus).toBe('failed');
-    expect(lastTransition?.errorCode).toBe('TARBALL_SECURITY_VIOLATION');
+    expect(lastTransition?.input.toStatus).toBe('failed');
+    expect(lastTransition?.input.errorCode).toBe('TARBALL_SECURITY_VIOLATION');
   });
 
   it('marks Postgres failed immediately and throws sanitized UnrecoverableError without raw cause on deterministic parser errors', async () => {
@@ -620,9 +789,9 @@ describe('createIngestionJobProcessor', () => {
     }
 
     const lastTransition = transitions[transitions.length - 1];
-    expect(lastTransition?.toStatus).toBe('failed');
-    expect(lastTransition?.errorCode).toBe('PARSER_FILE_LIMIT_EXCEEDED');
-    expect(lastTransition?.errorDetail).toBe('FILE_LIMIT_EXCEEDED');
+    expect(lastTransition?.input.toStatus).toBe('failed');
+    expect(lastTransition?.input.errorCode).toBe('PARSER_FILE_LIMIT_EXCEEDED');
+    expect(lastTransition?.input.errorDetail).toBe('FILE_LIMIT_EXCEEDED');
     expect(JSON.stringify(logs)).not.toContain('RAW_INTERNAL');
     expect(JSON.stringify(logs)).not.toContain('RAW_CAUSE');
   });
@@ -635,41 +804,36 @@ describe('createIngestionJobProcessor', () => {
     });
 
     const firstRun = makeFakeRepository();
-    const firstLogger = makeFakeLogger();
     const processFirst = createIngestionJobProcessor({
       repository: firstRun.repository,
-      logger: firstLogger.logger,
+      logger: makeFakeLogger().logger,
       maxSupportedFiles: 500,
       maxRepoSizeMb: 50,
       heartbeatIntervalMs: 0,
       extractRepo: () => Promise.reject(retryableErr),
       parserAdapter: makeFakeParserAdapter(),
     });
-
     await expect(processFirst(makeJob({ attemptsMade: 0, opts: { attempts: 2 } }))).rejects.toBe(
       retryableErr,
     );
-    expect(firstRun.transitions.map((t) => t.toStatus)).toEqual(['cloning']);
+    expect(firstRun.transitions).toEqual([]);
 
     const finalRun = makeFakeRepository();
-    const finalLogger = makeFakeLogger();
     const processFinal = createIngestionJobProcessor({
       repository: finalRun.repository,
-      logger: finalLogger.logger,
+      logger: makeFakeLogger().logger,
       maxSupportedFiles: 500,
       maxRepoSizeMb: 50,
       heartbeatIntervalMs: 0,
       extractRepo: () => Promise.reject(retryableErr),
       parserAdapter: makeFakeParserAdapter(),
     });
-
     await expect(processFinal(makeJob({ attemptsMade: 1, opts: { attempts: 2 } }))).rejects.toBe(
       retryableErr,
     );
-    expect(finalRun.transitions.map((t) => t.toStatus)).toEqual(['cloning', 'failed']);
-    expect(finalRun.transitions[1]?.errorCode).toBe('TARBALL_PARSE_ERROR');
+    expect(finalRun.transitions.map((t) => t.input.toStatus)).toEqual(['failed']);
+    expect(finalRun.transitions[0]?.input.errorCode).toBe('TARBALL_PARSE_ERROR');
 
-    // Retryable parser crash on non-final vs final attempt (sanitized outward BullMQ error)
     const parserCrash = makeParserIntegrationError('UNEXPECTED_CHILD_EXIT', { retryable: true });
     const pNonFinalRepo = makeFakeRepository();
     const pNonFinal = createIngestionJobProcessor({
@@ -687,7 +851,7 @@ describe('createIngestionJobProcessor', () => {
         err.persistedCode === 'PARSER_CHILD_CRASHED' &&
         err.cause === undefined,
     );
-    expect(pNonFinalRepo.transitions.map((t) => t.toStatus)).toEqual(['cloning', 'parsing']);
+    expect(pNonFinalRepo.transitions.map((t) => t.input.toStatus)).toEqual(['parsing']);
 
     const pFinalRepo = makeFakeRepository();
     const pFinal = createIngestionJobProcessor({
@@ -702,32 +866,15 @@ describe('createIngestionJobProcessor', () => {
     await expect(pFinal(makeJob({ attemptsMade: 1, opts: { attempts: 2 } }))).rejects.toBe(
       parserCrash,
     );
-    expect(pFinalRepo.transitions.map((t) => t.toStatus)).toEqual(['cloning', 'parsing', 'failed']);
-    expect(pFinalRepo.transitions[2]?.errorCode).toBe('PARSER_CHILD_CRASHED');
+    expect(pFinalRepo.transitions.map((t) => t.input.toStatus)).toEqual(['parsing', 'failed']);
+    expect(pFinalRepo.transitions[1]?.input.errorCode).toBe('PARSER_CHILD_CRASHED');
   });
 
-  it('stops early without downloading or running parser/handoff when conditional transitions return applied: false', async () => {
-    // 1. Rejected at cloning
-    const cloningRepo = makeFakeRepository({ rejectAtStage: 'cloning' });
-    const extractState = { called: false };
-    const processCloning = createIngestionJobProcessor({
-      repository: cloningRepo.repository,
-      logger: makeFakeLogger().logger,
-      maxSupportedFiles: 500,
-      maxRepoSizeMb: 50,
-      heartbeatIntervalMs: 0,
-      extractRepo: async (_opts, callback) => {
-        extractState.called = true;
-        return callback(SAMPLE_WORKSPACE);
-      },
-      parserAdapter: makeFakeParserAdapter(),
+  it('stops early without downloading or running parser/handoff when claim or fenced transitions return applied: false', async () => {
+    const parsingRepo = makeFakeRepository({
+      rejectAtStage: 'parsing',
+      rejectOutcome: 'ownership_lost',
     });
-    await processCloning(makeJob());
-    expect(cloningRepo.transitions.map((t) => t.toStatus)).toEqual(['cloning']);
-    expect(extractState.called).toBe(false);
-
-    // 2. Rejected at parsing -> parser never invoked
-    const parsingRepo = makeFakeRepository({ rejectAtStage: 'parsing' });
     let parseCalled = false;
     const processParsing = createIngestionJobProcessor({
       repository: parsingRepo.repository,
@@ -744,8 +891,10 @@ describe('createIngestionJobProcessor', () => {
     await processParsing(makeJob());
     expect(parseCalled).toBe(false);
 
-    // 3. Rejected at building_graph -> handoff and ready NEVER invoked
-    const graphRepo = makeFakeRepository({ rejectAtStage: 'building_graph' });
+    const graphRepo = makeFakeRepository({
+      rejectAtStage: 'building_graph',
+      rejectOutcome: 'terminal',
+    });
     let handoffCalled = false;
     const processGraph = createIngestionJobProcessor({
       repository: graphRepo.repository,
@@ -755,15 +904,14 @@ describe('createIngestionJobProcessor', () => {
       heartbeatIntervalMs: 0,
       extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
       parserAdapter: makeFakeParserAdapter(),
-      analysisResultHandoff: () => {
+      beforeGraphPublish: () => {
         handoffCalled = true;
         return Promise.resolve();
       },
     });
     await processGraph(makeJob());
     expect(handoffCalled).toBe(false);
-    expect(graphRepo.transitions.map((t) => t.toStatus)).toEqual([
-      'cloning',
+    expect(graphRepo.transitions.map((t) => t.input.toStatus)).toEqual([
       'parsing',
       'building_graph',
     ]);
@@ -782,8 +930,7 @@ describe('createIngestionJobProcessor', () => {
       heartbeatIntervalMs: 0,
       extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
       parserAdapter: makeFakeParserAdapter(),
-      analysisResultHandoff: () =>
-        Promise.reject(new Error(`DB insert failed near ${secretSnippet}`)),
+      beforeGraphPublish: () => Promise.reject(new Error(`DB insert failed near ${secretSnippet}`)),
     });
 
     await expect(processJob(makeJob({ attemptsMade: 1, opts: { attempts: 2 } }))).rejects.toSatisfy(
@@ -793,8 +940,7 @@ describe('createIngestionJobProcessor', () => {
         !err.message.includes(secretSnippet),
     );
 
-    expect(transitions.map((t) => t.toStatus)).toEqual([
-      'cloning',
+    expect(transitions.map((t) => t.input.toStatus)).toEqual([
       'parsing',
       'building_graph',
       'failed',
@@ -804,7 +950,6 @@ describe('createIngestionJobProcessor', () => {
   });
 
   it('handles cancellation before parsing, during parsing, and after parsing before ready dispatch without marking ready', async () => {
-    // 1. Cancellation before parsing (signal aborted during extraction)
     const cancelBeforeParse = new AbortController();
     let parseCalled = false;
     const repo1 = makeFakeRepository();
@@ -828,9 +973,8 @@ describe('createIngestionJobProcessor', () => {
       IngestionCancelledError,
     );
     expect(parseCalled).toBe(false);
-    expect(repo1.transitions.map((t) => t.toStatus)).toEqual(['cloning']);
+    expect(repo1.transitions).toEqual([]);
 
-    // 2. Cancellation during parsing -> ParserIntegrationError(PARSER_CANCELLED)
     const cancelDuringParse = new AbortController();
     const parserCancelErr = makeParserIntegrationError('PARSER_CANCELLED', { retryable: true });
     const repo2 = makeFakeRepository();
@@ -850,10 +994,9 @@ describe('createIngestionJobProcessor', () => {
     await expect(p2(makeJob({ attemptsMade: 1, opts: { attempts: 2 } }))).rejects.toBe(
       parserCancelErr,
     );
-    expect(repo2.transitions.map((t) => t.toStatus)).toEqual(['cloning', 'parsing', 'failed']);
-    expect(repo2.transitions[2]?.errorCode).toBe('PARSER_CANCELLED');
+    expect(repo2.transitions.map((t) => t.input.toStatus)).toEqual(['parsing', 'failed']);
+    expect(repo2.transitions[1]?.input.errorCode).toBe('PARSER_CANCELLED');
 
-    // 3. Cancellation after handoff completes but before ready dispatch -> NEVER commits ready
     const cancelBeforeReady = new AbortController();
     const repo3 = makeFakeRepository();
     const p3 = createIngestionJobProcessor({
@@ -865,7 +1008,7 @@ describe('createIngestionJobProcessor', () => {
       shutdownSignal: cancelBeforeReady.signal,
       extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
       parserAdapter: makeFakeParserAdapter(),
-      analysisResultHandoff: () => {
+      beforeGraphPublish: () => {
         cancelBeforeReady.abort();
         return Promise.resolve();
       },
@@ -873,11 +1016,7 @@ describe('createIngestionJobProcessor', () => {
     await expect(p3(makeJob({ attemptsMade: 0, opts: { attempts: 2 } }))).rejects.toBeInstanceOf(
       IngestionCancelledError,
     );
-    expect(repo3.transitions.map((t) => t.toStatus)).toEqual([
-      'cloning',
-      'parsing',
-      'building_graph',
-    ]);
+    expect(repo3.transitions.map((t) => t.input.toStatus)).toEqual(['parsing', 'building_graph']);
   });
 
   it('notifies infrastructure supervision synchronously on startup/fatal parser errors and allows bounded replacement retry on non-final settled attempt', async () => {
@@ -905,9 +1044,9 @@ describe('createIngestionJobProcessor', () => {
       startupErr,
     );
     expect(infraErrors).toEqual([startupErr]);
-    // Non-final settled infrastructure failure leaves DB non-terminal so a healthy replacement worker can retry
-    expect(repo.transitions.map((t) => t.toStatus)).toEqual(['cloning', 'parsing']);
+    expect(repo.transitions.map((t) => t.input.toStatus)).toEqual(['parsing']);
   });
+
   it('invokes onInfrastructureFailure synchronously BEFORE awaiting an in-flight heartbeat drain', async () => {
     const events: string[] = [];
     let resolveHeartbeat: (() => void) | undefined;
@@ -919,7 +1058,7 @@ describe('createIngestionJobProcessor', () => {
           events.push('heartbeat.start');
           resolveHeartbeat = () => {
             events.push('heartbeat.done');
-            resolve({ updated: true, updatedAt: new Date() });
+            resolve({ outcome: 'updated', updated: true, updatedAt: new Date() });
           };
         }),
     });
@@ -954,7 +1093,6 @@ describe('createIngestionJobProcessor', () => {
       }),
     );
 
-    // Yield microtasks: infrastructure callback MUST fire while heartbeat is still pending
     await new Promise((r) => setTimeout(r, 15));
     expect(events).toEqual(['heartbeat.start', 'infra.notified']);
 
@@ -1005,14 +1143,35 @@ describe('createIngestionJobProcessor', () => {
     expect(hbCalls).toBeGreaterThanOrEqual(2);
   });
 
-  it('performs final-attempt DB failure bookkeeping without starting extraction when BullMQ dispatches a claimed job right after shutdown latches', async () => {
+  it('never writes unfenced failure if shutdown latches before claim, and persists fenced failure before db.close if shutdown latches after claim', async () => {
+    // 1. Shutdown latched BEFORE claim -> no claim, no unfenced failed transition
+    const preClaimRepo = makeFakeRepository();
+    const preCtrl = new AbortController();
+    preCtrl.abort();
+    const preProc = createIngestionJobProcessor({
+      repository: preClaimRepo.repository,
+      logger: makeFakeLogger().logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      shutdownSignal: preCtrl.signal,
+      extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+      parserAdapter: makeFakeParserAdapter(),
+    });
+    await expect(
+      preProc(makeJob({ attemptsMade: 1, opts: { attempts: 2 } })),
+    ).rejects.toBeInstanceOf(IngestionCancelledError);
+    expect(preClaimRepo.claims).toEqual([]);
+    expect(preClaimRepo.transitions).toEqual([]);
+
+    // 2. Shutdown latched AFTER claim on final attempt -> fenced failed persisted BEFORE db.close
     const events: string[] = [];
-    const { repository, transitions } = makeFakeRepository({
-      onTransition: (t) => {
+    const postClaimRepo = makeFakeRepository({
+      onTransition: (_ownership, t) => {
         events.push(`db:${t.toStatus}`);
+        return undefined;
       },
     });
-
     const lifecycle = createWorkerServiceLifecycle({
       serviceName: 'worker',
       closeTimeoutMs: 500,
@@ -1022,11 +1181,8 @@ describe('createIngestionJobProcessor', () => {
       events.push('db.close');
       return Promise.resolve();
     });
-
-    let extractCalled = false;
-    let parseCalled = false;
     const baseProcessor = createIngestionJobProcessor({
-      repository,
+      repository: postClaimRepo.repository,
       logger: makeFakeLogger().logger,
       maxSupportedFiles: 500,
       maxRepoSizeMb: 50,
@@ -1035,37 +1191,320 @@ describe('createIngestionJobProcessor', () => {
       fatalSignal: lifecycle.fatalSignal,
       isFatalState: lifecycle.isFatal,
       extractRepo: async (_opts, callback) => {
-        extractCalled = true;
+        void lifecycle.shutdown('SIGTERM');
         return callback(SAMPLE_WORKSPACE);
       },
-      parserAdapter: makeFakeParserAdapter(() => {
-        parseCalled = true;
-        return Promise.resolve(makeFakeValidatedResult());
-      }),
+      parserAdapter: makeFakeParserAdapter(),
     });
-
-    const wrapped = lifecycle.wrapProcessor(baseProcessor, {
-      delegateStoppedToProcessor: true,
+    const wrapped = lifecycle.wrapProcessor(baseProcessor, { delegateStoppedToProcessor: true });
+    lifecycle.setWorker({
+      close: () =>
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, 30);
+        }),
     });
-
-    // Latch shutdown before BullMQ dispatches the final attempt of an already-claimed job
-    const workerCloseGate = new Promise<void>((resolve) => {
-      setTimeout(resolve, 30);
-    });
-    lifecycle.setWorker({ close: () => workerCloseGate });
-    const shutdownPromise = lifecycle.shutdown('SIGTERM');
 
     await expect(
-      wrapped(makeJob({ attemptsMade: 1, opts: { attempts: 2 } })),
+      wrapped(makeJob({ attemptsMade: 1, attemptsStarted: 2, opts: { attempts: 2 } })),
     ).rejects.toBeInstanceOf(IngestionCancelledError);
-    const outcome = await shutdownPromise;
-
-    expect(extractCalled).toBe(false);
-    expect(parseCalled).toBe(false);
-    expect(transitions.map((t) => t.toStatus)).toEqual(['failed']);
-    expect(transitions[0]?.errorCode).toBe('INGESTION_CANCELLED');
-    expect(outcome.confirmed).toBe(true);
-    // Final DB failure persisted strictly BEFORE PostgreSQL pool closed
+    const outcome = await lifecycle.waitForShutdown();
+    expect(outcome?.confirmed).toBe(true);
     expect(events).toEqual(['db:failed', 'db.close']);
+  });
+
+  it('skips extraction, parsing, and heartbeats on stale_generation or already_terminal claims, and rejects invalid/missing claims as UnrecoverableError', async () => {
+    for (const skipOutcome of [
+      { outcome: 'stale_generation' as const, storedGeneration: 3, incomingGeneration: 1 },
+      { outcome: 'already_terminal' as const, status: 'ready' as const },
+    ]) {
+      let extractCalled = false;
+      const { repository, transitions, getHeartbeatCount } = makeFakeRepository({
+        onClaim: () => Promise.resolve(skipOutcome),
+      });
+      const processJob = createIngestionJobProcessor({
+        repository,
+        logger: makeFakeLogger().logger,
+        maxSupportedFiles: 500,
+        maxRepoSizeMb: 50,
+        heartbeatIntervalMs: 10,
+        extractRepo: async (_opts, callback) => {
+          extractCalled = true;
+          return callback(SAMPLE_WORKSPACE);
+        },
+        parserAdapter: makeFakeParserAdapter(),
+      });
+
+      await expect(processJob(makeJob())).resolves.toBeUndefined();
+      expect(extractCalled).toBe(false);
+      expect(transitions).toEqual([]);
+      expect(getHeartbeatCount()).toBe(0);
+    }
+
+    for (const badOutcome of [
+      { outcome: 'missing' as const },
+      { outcome: 'identity_mismatch' as const, reason: 'commit_sha_mismatch' as const },
+      { outcome: 'invalid_generation' as const, incomingGeneration: 0 },
+    ]) {
+      const { repository, transitions } = makeFakeRepository({
+        onClaim: () => Promise.resolve(badOutcome),
+      });
+      const processJob = createIngestionJobProcessor({
+        repository,
+        logger: makeFakeLogger().logger,
+        maxSupportedFiles: 500,
+        maxRepoSizeMb: 50,
+        heartbeatIntervalMs: 0,
+        extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+        parserAdapter: makeFakeParserAdapter(),
+      });
+
+      await expect(processJob(makeJob())).rejects.toBeInstanceOf(UnrecoverableError);
+      expect(transitions).toEqual([]);
+    }
+  });
+
+  it('treats busy heartbeats as transient, cancels obsolete job cleanly on ownership_lost without failing DB or shutting down worker', async () => {
+    let ticks = 0;
+    const shutdownCtrl = new AbortController();
+    const { repository, transitions } = makeFakeRepository({
+      onHeartbeat: (ownership) => {
+        ticks += 1;
+        if (ticks === 1) {
+          return Promise.resolve({ outcome: 'busy', updated: false });
+        }
+        return Promise.resolve({
+          outcome: 'ownership_lost',
+          updated: false,
+          reason: 'stale_generation',
+          storedGeneration: ownership.attemptGeneration + 1,
+          expectedGeneration: ownership.attemptGeneration,
+        });
+      },
+    });
+
+    const parserCancelErr = makeParserIntegrationError('PARSER_CANCELLED', { retryable: true });
+    let parserSignalAborted = false;
+
+    const processJob = createIngestionJobProcessor({
+      repository,
+      logger: makeFakeLogger().logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 10,
+      shutdownSignal: shutdownCtrl.signal,
+      extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+      parserAdapter: makeFakeParserAdapter(
+        (_ws, opts) =>
+          new Promise<ValidatedAnalysisResult>((_resolve, reject) => {
+            if (opts?.signal?.aborted === true) {
+              parserSignalAborted = true;
+              reject(parserCancelErr);
+              return;
+            }
+            opts?.signal?.addEventListener(
+              'abort',
+              () => {
+                parserSignalAborted = true;
+                reject(parserCancelErr);
+              },
+              { once: true },
+            );
+          }),
+      ),
+    });
+
+    await expect(
+      processJob(makeJob({ attemptsMade: 1, opts: { attempts: 2 } })),
+    ).resolves.toBeUndefined();
+    expect(ticks).toBe(2);
+    expect(parserSignalAborted).toBe(true);
+    expect(shutdownCtrl.signal.aborted).toBe(false);
+    expect(transitions.map((t) => t.input.toStatus)).toEqual(['parsing']);
+  });
+
+  it('never writes an unfenced or terminal failure when claim or transition throws an uncertain DB error', async () => {
+    const uncertainErr = new DbError('DB_QUERY_ERROR', 'tx resolution unknown', {
+      pgCode: PG_TRANSACTION_RESOLUTION_UNKNOWN_CODE,
+    });
+
+    const claimFailRepo = makeFakeRepository({ onClaim: () => Promise.reject(uncertainErr) });
+    const p1 = createIngestionJobProcessor({
+      repository: claimFailRepo.repository,
+      logger: makeFakeLogger().logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+      parserAdapter: makeFakeParserAdapter(),
+    });
+    await expect(p1(makeJob({ attemptsMade: 1, opts: { attempts: 2 } }))).rejects.toThrow(
+      'Database temporarily unavailable during repository ingestion.',
+    );
+    expect(claimFailRepo.transitions).toEqual([]);
+
+    // 2. Uncertain publish error reconciled as committed under our ownership -> completes cleanly
+    const committedPubRepo = makeFakeRepository({
+      onPublish: () => Promise.reject(uncertainErr),
+      onReconcile: (ownership) => {
+        const pair = makeFakeRepoAndJob('ready', ownership.attemptGeneration);
+        return Promise.resolve({
+          outcome: 'published_by_owner',
+          repository: { ...pair.repository, graphPersistedAt: new Date() },
+          job: { ...pair.job, progressPct: 100 },
+        });
+      },
+    });
+    const p2 = createIngestionJobProcessor({
+      repository: committedPubRepo.repository,
+      logger: makeFakeLogger().logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+      parserAdapter: makeFakeParserAdapter(),
+    });
+    await expect(p2(makeJob({ attemptsMade: 1, opts: { attempts: 2 } }))).resolves.toBeUndefined();
+    expect(committedPubRepo.reconciliations).toHaveLength(1);
+    expect(committedPubRepo.transitions.map((t) => t.input.toStatus)).toEqual([
+      'parsing',
+      'building_graph',
+    ]);
+
+    // 3. Uncertain publish error where reconciliation fails (even with colliding error message!) -> logs warning & preserves non-terminal
+    const reconcileFailLogs = makeFakeLogger();
+    const unavailableReconcileRepo = makeFakeRepository({
+      onPublish: () => Promise.reject(uncertainErr),
+      onReconcile: () =>
+        Promise.reject(new Error('Database temporarily unavailable during repository ingestion.')),
+    });
+    const p3 = createIngestionJobProcessor({
+      repository: unavailableReconcileRepo.repository,
+      logger: reconcileFailLogs.logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+      parserAdapter: makeFakeParserAdapter(),
+    });
+    await expect(p3(makeJob({ attemptsMade: 1, opts: { attempts: 2 } }))).rejects.toThrow(
+      'Database temporarily unavailable during repository ingestion.',
+    );
+    expect(unavailableReconcileRepo.transitions.map((t) => t.input.toStatus)).toEqual([
+      'parsing',
+      'building_graph',
+    ]);
+    expect(
+      reconcileFailLogs.logs.some(
+        (l) =>
+          l.level === 'warn' && l.msg.includes('Could not reconcile uncertain graph publication'),
+      ),
+    ).toBe(true);
+
+    // 3b. Uncertain publish error reconciled as ownership_lost (newer owner active) -> exits cleanly without failing repo
+    const newerOwnerReconcileRepo = makeFakeRepository({
+      onPublish: () => Promise.reject(uncertainErr),
+      onReconcile: (ownership) =>
+        Promise.resolve({
+          outcome: 'ownership_lost',
+          storedGeneration: ownership.attemptGeneration + 1,
+          expectedGeneration: ownership.attemptGeneration,
+        }),
+    });
+    const p3b = createIngestionJobProcessor({
+      repository: newerOwnerReconcileRepo.repository,
+      logger: makeFakeLogger().logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+      parserAdapter: makeFakeParserAdapter(),
+    });
+    await expect(p3b(makeJob({ attemptsMade: 1, opts: { attempts: 2 } }))).resolves.toBeUndefined();
+    expect(newerOwnerReconcileRepo.transitions.map((t) => t.input.toStatus)).toEqual([
+      'parsing',
+      'building_graph',
+    ]);
+
+    // 4. Uncertain publish error authoritatively confirmed rolled back on final attempt -> marks failed
+    const confirmedRollbackRepo = makeFakeRepository({
+      onPublish: () => Promise.reject(uncertainErr),
+      onReconcile: (ownership) => {
+        const pair = makeFakeRepoAndJob('building_graph', ownership.attemptGeneration);
+        return Promise.resolve({
+          outcome: 'still_owned_unpublished',
+          repository: pair.repository,
+          job: pair.job,
+        });
+      },
+    });
+    const p4 = createIngestionJobProcessor({
+      repository: confirmedRollbackRepo.repository,
+      logger: makeFakeLogger().logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+      parserAdapter: makeFakeParserAdapter(),
+    });
+    await expect(p4(makeJob({ attemptsMade: 1, opts: { attempts: 2 } }))).rejects.toThrow(
+      'Database temporarily unavailable during repository ingestion.',
+    );
+    expect(confirmedRollbackRepo.transitions.map((t) => t.input.toStatus)).toEqual([
+      'parsing',
+      'building_graph',
+      'failed',
+    ]);
+
+    // 5. GraphPersistenceValidationError -> non-retryable UnrecoverableError + fenced failed
+    const invalidGraphRepo = makeFakeRepository({
+      onPublish: () =>
+        Promise.reject(
+          new GraphPersistenceValidationError('PARENT_CYCLE_DETECTED', 'Cyclic parent graph'),
+        ),
+    });
+    const p5 = createIngestionJobProcessor({
+      repository: invalidGraphRepo.repository,
+      logger: makeFakeLogger().logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+      parserAdapter: makeFakeParserAdapter(),
+    });
+    await expect(p5(makeJob({ attemptsMade: 0, opts: { attempts: 2 } }))).rejects.toBeInstanceOf(
+      UnrecoverableError,
+    );
+    expect(invalidGraphRepo.transitions.map((t) => t.input.toStatus)).toEqual([
+      'parsing',
+      'building_graph',
+      'failed',
+    ]);
+    expect(invalidGraphRepo.transitions[2]?.input.errorCode).toBe('GRAPH_VALIDATION_ERROR');
+
+    // 6. GraphPublicationAbortedError on shutdown -> throws IngestionCancelledError without failed on non-final
+    const shutdownCtrl = new AbortController();
+    const abortedPubRepo = makeFakeRepository({
+      onPublish: () => {
+        shutdownCtrl.abort();
+        return Promise.reject(new GraphPublicationAbortedError());
+      },
+    });
+    const p6 = createIngestionJobProcessor({
+      repository: abortedPubRepo.repository,
+      logger: makeFakeLogger().logger,
+      maxSupportedFiles: 500,
+      maxRepoSizeMb: 50,
+      heartbeatIntervalMs: 0,
+      shutdownSignal: shutdownCtrl.signal,
+      extractRepo: async (_opts, callback) => callback(SAMPLE_WORKSPACE),
+      parserAdapter: makeFakeParserAdapter(),
+    });
+    await expect(p6(makeJob({ attemptsMade: 0, opts: { attempts: 2 } }))).rejects.toBeInstanceOf(
+      IngestionCancelledError,
+    );
+    expect(abortedPubRepo.transitions.map((t) => t.input.toStatus)).toEqual([
+      'parsing',
+      'building_graph',
+    ]);
   });
 });
