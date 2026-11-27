@@ -5,8 +5,10 @@ import type {
   FastifyRateLimitStoreCtor,
 } from '@fastify/rate-limit';
 import { z } from 'zod';
+import { extractRateLimitRouteScope } from './rate-limit.js';
 
 export const DEFAULT_RATE_LIMIT_KEY_PREFIX = 'archon:rl:ingest:' as const;
+export const DEFAULT_GRAPH_RATE_LIMIT_KEY_PREFIX = 'archon:rl:graph:' as const;
 const DEFAULT_FALLBACK_TIME_WINDOW_MS = 60 * 60 * 1000;
 
 /**
@@ -40,6 +42,7 @@ export interface RedisRateLimitClient {
 export interface CreateRedisRateLimitStoreOptions {
   readonly client: RedisRateLimitClient;
   readonly keyPrefix?: string;
+  readonly graphKeyPrefix?: string;
   readonly logger: Pick<Logger, 'warn'>;
 }
 
@@ -47,78 +50,10 @@ const evalResultSchema = z.tuple([z.number().int().nonnegative(), z.number().int
 
 type StoreIncrCallback = (error: Error | null, result?: { current: number; ttl: number }) => void;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function formatMethod(rawMethod: unknown): string | undefined {
-  if (typeof rawMethod === 'string' && rawMethod.trim().length > 0) {
-    return rawMethod.trim().toUpperCase();
-  }
-  if (Array.isArray(rawMethod)) {
-    const parts = rawMethod.filter(
-      (item): item is string => typeof item === 'string' && item.trim().length > 0,
-    );
-    if (parts.length > 0) {
-      return parts.map((p) => p.trim().toUpperCase()).join(',');
-    }
-  }
-  return undefined;
-}
-
-function readNonEmptyString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-/**
- * Extracts route scope and optional timeWindow from @fastify/rate-limit's child() argument.
- * At runtime v11.3.0 passes `mergedRateLimitParams` (`{ routeInfo: { method, url }, timeWindow }`),
- * whereas the TypeScript .d.ts declares `RouteOptions & { path, prefix }`. Both shapes are supported.
- */
-function extractRouteScopeAndWindow(raw: unknown): {
-  readonly scope: string;
-  readonly timeWindowMs?: number;
-} {
-  if (!isRecord(raw)) {
-    return { scope: 'global' };
-  }
-
-  const timeWindowRaw = raw.timeWindow;
-  const timeWindowMs =
-    typeof timeWindowRaw === 'number' && Number.isFinite(timeWindowRaw) && timeWindowRaw > 0
-      ? Math.trunc(timeWindowRaw)
-      : undefined;
-
-  // 1. Real @fastify/rate-limit@11.3.0 runtime shape: mergedRateLimitParams.routeInfo
-  if (isRecord(raw.routeInfo)) {
-    const method = formatMethod(raw.routeInfo.method);
-    const url = readNonEmptyString(raw.routeInfo.url) ?? readNonEmptyString(raw.routeInfo.path);
-    if (method !== undefined && url !== undefined) {
-      return { scope: `${method}:${url}`, timeWindowMs };
-    }
-    if (url !== undefined) {
-      return { scope: url, timeWindowMs };
-    }
-  }
-
-  // 2. Direct RouteOptions & { path, prefix } shape from .d.ts
-  const method = formatMethod(raw.method);
-  const routePath =
-    readNonEmptyString(raw.url) ?? readNonEmptyString(raw.path) ?? readNonEmptyString(raw.prefix);
-
-  if (method !== undefined && routePath !== undefined) {
-    return { scope: `${method}:${routePath}`, timeWindowMs };
-  }
-  if (routePath !== undefined) {
-    return { scope: routePath, timeWindowMs };
-  }
-
-  return { scope: 'global', timeWindowMs };
-}
-
 interface InternalStoreDeps {
   readonly client: RedisRateLimitClient;
   readonly basePrefix: string;
+  readonly graphPrefix: string;
   readonly logger: Pick<Logger, 'warn'>;
 }
 
@@ -126,6 +61,7 @@ class RedisRateLimitStoreInstance implements FastifyRateLimitStore {
   constructor(
     protected readonly deps: InternalStoreDeps,
     protected readonly routeScope: string,
+    protected readonly isGraphReadBucket: boolean,
     protected readonly defaultTimeWindowMs: number,
   ) {}
 
@@ -147,7 +83,11 @@ class RedisRateLimitStoreInstance implements FastifyRateLimitStore {
       return;
     }
 
-    const redisKey = `${this.deps.basePrefix}${this.routeScope}:${key}`;
+    // All 5 graph-read routes (GET & HEAD) share one Redis key per IP (`archon:rl:graph:<ip>`).
+    // Ingestion routes preserve exact existing key construction (`archon:rl:ingest:POST:/api/v1/repos:<ip>`).
+    const redisKey = this.isGraphReadBucket
+      ? `${this.deps.graphPrefix}${key}`
+      : `${this.deps.basePrefix}${this.routeScope}:${key}`;
 
     this.deps.client
       .eval(RATE_LIMIT_INCR_LUA, 1, redisKey, windowMs)
@@ -180,9 +120,14 @@ class RedisRateLimitStoreInstance implements FastifyRateLimitStore {
   }
 
   child(routeOptions: Parameters<FastifyRateLimitStore['child']>[0]): FastifyRateLimitStore {
-    const extracted = extractRouteScopeAndWindow(routeOptions);
+    const extracted = extractRateLimitRouteScope(routeOptions);
     const nextWindow = extracted.timeWindowMs ?? this.defaultTimeWindowMs;
-    return new RedisRateLimitStoreInstance(this.deps, extracted.scope, nextWindow);
+    return new RedisRateLimitStoreInstance(
+      this.deps,
+      extracted.scope,
+      extracted.isGraphRead,
+      nextWindow,
+    );
   }
 }
 
@@ -193,16 +138,29 @@ class RedisRateLimitStoreInstance implements FastifyRateLimitStore {
 export function createRedisRateLimitStore(
   options: CreateRedisRateLimitStoreOptions,
 ): FastifyRateLimitStoreCtor {
+  const basePrefix = options.keyPrefix ?? DEFAULT_RATE_LIMIT_KEY_PREFIX;
+  const graphPrefix =
+    options.graphKeyPrefix ??
+    (basePrefix === DEFAULT_RATE_LIMIT_KEY_PREFIX
+      ? DEFAULT_GRAPH_RATE_LIMIT_KEY_PREFIX
+      : `${basePrefix}graph-read:`);
+
   const deps: InternalStoreDeps = {
     client: options.client,
-    basePrefix: options.keyPrefix ?? DEFAULT_RATE_LIMIT_KEY_PREFIX,
+    basePrefix,
+    graphPrefix,
     logger: options.logger,
   };
 
   return class ArchonRedisRateLimitStore extends RedisRateLimitStoreInstance {
     constructor(pluginOptions: FastifyRateLimitOptions) {
-      const extracted = extractRouteScopeAndWindow(pluginOptions);
-      super(deps, extracted.scope, extracted.timeWindowMs ?? DEFAULT_FALLBACK_TIME_WINDOW_MS);
+      const extracted = extractRateLimitRouteScope(pluginOptions);
+      super(
+        deps,
+        extracted.scope,
+        extracted.isGraphRead,
+        extracted.timeWindowMs ?? DEFAULT_FALLBACK_TIME_WINDOW_MS,
+      );
     }
   };
 }

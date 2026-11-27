@@ -1,6 +1,11 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createDbClient, createIngestionRepository, sanitizeDatabaseTarget } from '@archon/db';
+import {
+  createDbClient,
+  createGraphQueryRepository,
+  createIngestionRepository,
+  sanitizeDatabaseTarget,
+} from '@archon/db';
 import { createLogger, loadEnv } from '@archon/shared';
 import {
   DEFAULT_INGESTION_QUEUE_NAME,
@@ -20,6 +25,11 @@ import {
   type ProductionParserLogEvent,
 } from '@archon/worker';
 import { buildApp } from './app.js';
+import {
+  DEFAULT_EMBEDDED_GRAPH_QUERY_CONCURRENCY,
+  DEFAULT_STANDALONE_GRAPH_QUERY_CONCURRENCY,
+  createGraphQueryAdmissionGate,
+} from './graph-admission.js';
 import { GitHubPrecheckClient } from './github/precheck.js';
 import { createBullMqIngestionEnqueuer } from './queue/enqueuer.js';
 import { createRedisRateLimitStoreConfig } from './rate-limit.js';
@@ -95,6 +105,23 @@ export async function startServer(): Promise<void> {
     const dbClient = createDbClient({ databaseUrl: env.DATABASE_URL });
     lifecycle.setCloseDb(() => dbClient.close());
     const repository = createIngestionRepository(dbClient.db);
+    const graphQueryRepository = createGraphQueryRepository(dbClient.db);
+    const graphQueryAdmission = createGraphQueryAdmissionGate(
+      env.RUN_EMBEDDED_WORKER
+        ? DEFAULT_EMBEDDED_GRAPH_QUERY_CONCURRENCY
+        : DEFAULT_STANDALONE_GRAPH_QUERY_CONCURRENCY,
+    );
+    if (lifecycle.shutdownSignal.aborted) {
+      graphQueryAdmission.stop();
+    } else {
+      lifecycle.shutdownSignal.addEventListener(
+        'abort',
+        () => {
+          graphQueryAdmission.stop();
+        },
+        { once: true },
+      );
+    }
 
     const apiRedis = createFastFailRedisClient({
       redisUrl: env.REDIS_URL,
@@ -194,6 +221,8 @@ export async function startServer(): Promise<void> {
       env,
       logger,
       repository,
+      graphQueryRepository,
+      graphQueryAdmission,
       checkDbHealth: () => dbClient.ping(),
       checkRedisHealth,
       githubPrecheck,

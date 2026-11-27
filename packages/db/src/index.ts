@@ -29,6 +29,7 @@ export {
   isPgOutcomeUnknown,
   isPgQueryCanceled,
   isPgSerializationFailure,
+  isPgStatementTimeout,
   isPgTransactionTimeout,
   isPgUniqueViolation,
   type DbErrorCategory,

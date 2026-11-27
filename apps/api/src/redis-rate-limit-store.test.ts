@@ -154,4 +154,58 @@ describe('createRedisRateLimitStore', () => {
     expect(badOutcome.error).toBeInstanceOf(Error);
     expect(secondLogs.warnings).toHaveLength(1);
   });
+
+  it('shares one Redis graph-read bucket across GET and HEAD graph endpoints while preserving ingestion keys', async () => {
+    const keys: string[] = [];
+    const counters = new Map<string, number>();
+    const fakeClient: RedisRateLimitClient = {
+      status: 'ready',
+      eval(_script, _n, ...args) {
+        const key = String(args[0] ?? '');
+        const win = Number(args[1] ?? 60_000);
+        keys.push(key);
+        const next = (counters.get(key) ?? 0) + 1;
+        counters.set(key, next);
+        return Promise.resolve([next, win]);
+      },
+    };
+    const { logger } = makeFakeLogger();
+    const StoreCtor = createRedisRateLimitStore({ client: fakeClient, logger });
+    const root = new StoreCtor({ timeWindow: 60_000 });
+
+    const graphGet = root.child({
+      method: 'GET',
+      url: '/api/v1/repos/:repoId/graph',
+      path: '/api/v1/repos/:repoId/graph',
+      prefix: '',
+      handler: () => undefined,
+    });
+    const hubsHead = root.child({
+      method: 'HEAD',
+      url: '/api/v1/repos/:repoId/hubs',
+      path: '/api/v1/repos/:repoId/hubs',
+      prefix: '',
+      handler: () => undefined,
+    });
+    const ingestPost = root.child({
+      method: 'POST',
+      url: '/api/v1/repos',
+      path: '/api/v1/repos',
+      prefix: '',
+      handler: () => undefined,
+    });
+
+    const g1 = await invokeIncr(graphGet, '198.51.100.10', 60_000, 120);
+    const g2 = await invokeIncr(hubsHead, '198.51.100.10', 60_000, 120);
+    const i1 = await invokeIncr(ingestPost, '198.51.100.10', 3_600_000, 5);
+
+    expect(g1.result?.current).toBe(1);
+    expect(g2.result?.current).toBe(2);
+    expect(i1.result?.current).toBe(1);
+    expect(keys).toEqual([
+      'archon:rl:graph:198.51.100.10',
+      'archon:rl:graph:198.51.100.10',
+      'archon:rl:ingest:POST:/api/v1/repos:198.51.100.10',
+    ]);
+  });
 });

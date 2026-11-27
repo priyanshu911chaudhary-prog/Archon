@@ -1155,23 +1155,6 @@ export function createGraphQueryRepository(
           errorCode: 'GRAPH_BUDGET_EXCEEDED',
         });
 
-        let anchorQualifiedName: string | null = null;
-        if (cursorKey !== null) {
-          const anchorRows = await tx
-            .select({ qualifiedName: nodes.qualifiedName })
-            .from(nodes)
-            .where(and(eq(nodes.repoId, repo.id), eq(nodes.id, cursorKey.id)))
-            .limit(1);
-          const anchor = anchorRows[0];
-          if (anchor === undefined) {
-            throw new GraphQueryError(
-              'INVALID_CURSOR',
-              'Pagination cursor references a hub node not found in this repository.',
-            );
-          }
-          anchorQualifiedName = anchor.qualifiedName;
-        }
-
         let candidateNodes: NodeMetadataRow[];
         if (scope === 'file' || scope === 'file_rollup') {
           candidateNodes = await tx
@@ -1237,21 +1220,42 @@ export function createGraphQueryRepository(
           return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
         });
 
+        let actualAnchor: HubNodeItem | null = null;
+        if (cursorKey !== null) {
+          const matched = allHubs.find((item) => item.id === cursorKey.id);
+          if (matched === undefined) {
+            throw new GraphQueryError(
+              'INVALID_CURSOR',
+              'Pagination cursor does not reference a qualifying hub for the bound scope and threshold.',
+            );
+          }
+          if (
+            matched.hubDegree !== cursorKey.hubDegree ||
+            matched.rawIncomingEdgeCount !== cursorKey.rawIncomingEdgeCount
+          ) {
+            throw new GraphQueryError(
+              'INVALID_CURSOR',
+              'Pagination cursor sort values do not match the referenced hub anchor.',
+            );
+          }
+          actualAnchor = matched;
+        }
+
         const totalHubs = allHubs.length;
         const filtered =
-          cursorKey === null || anchorQualifiedName === null
+          actualAnchor === null
             ? allHubs
             : allHubs.filter((item) => {
-                if (item.hubDegree !== cursorKey.hubDegree) {
-                  return item.hubDegree < cursorKey.hubDegree;
+                if (item.hubDegree !== actualAnchor.hubDegree) {
+                  return item.hubDegree < actualAnchor.hubDegree;
                 }
-                if (item.rawIncomingEdgeCount !== cursorKey.rawIncomingEdgeCount) {
-                  return item.rawIncomingEdgeCount < cursorKey.rawIncomingEdgeCount;
+                if (item.rawIncomingEdgeCount !== actualAnchor.rawIncomingEdgeCount) {
+                  return item.rawIncomingEdgeCount < actualAnchor.rawIncomingEdgeCount;
                 }
-                if (item.qualifiedName !== anchorQualifiedName) {
-                  return item.qualifiedName > anchorQualifiedName;
+                if (item.qualifiedName !== actualAnchor.qualifiedName) {
+                  return item.qualifiedName > actualAnchor.qualifiedName;
                 }
-                return item.id > cursorKey.id;
+                return item.id > actualAnchor.id;
               });
 
         const hasMore = filtered.length > limit;

@@ -1,4 +1,4 @@
-import type { IngestionRepository } from '@archon/db';
+import type { GraphQueryRepository, IngestionRepository } from '@archon/db';
 import type { AppEnv, Logger } from '@archon/shared';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
@@ -13,9 +13,17 @@ import {
   createInMemoryRateLimitStore,
   type RateLimitStoreConfig,
 } from './rate-limit.js';
+import {
+  DEFAULT_EMBEDDED_GRAPH_QUERY_CONCURRENCY,
+  DEFAULT_STANDALONE_GRAPH_QUERY_CONCURRENCY,
+  createGraphQueryAdmissionGate,
+  type GraphQueryAdmissionGate,
+} from './graph-admission.js';
+import { registerGraphRoutes } from './routes/graph.js';
 import { registerHealthRoute } from './routes/health.js';
 import { registerJobsRoute } from './routes/jobs.js';
 import { registerReposRoute } from './routes/repos.js';
+import { createGraphQueryService } from './services/graph-query-service.js';
 import { createIngestionService } from './services/ingestion-service.js';
 
 export const API_BODY_LIMIT_BYTES = 2048;
@@ -24,6 +32,12 @@ export interface BuildAppDependencies {
   readonly env: AppEnv;
   readonly logger: Logger;
   readonly repository: IngestionRepository;
+  readonly graphQueryRepository?: GraphQueryRepository;
+  readonly graphQueryAdmission?: GraphQueryAdmissionGate;
+  readonly graphQueryMaxConcurrency?: number;
+  readonly graphQueryMaxResponseBytes?: number;
+  readonly graphRateLimitMax?: number;
+  readonly graphRateLimitWindowMs?: number;
   readonly checkDbHealth: () => Promise<boolean>;
   readonly checkRedisHealth?: () => Promise<boolean>;
   readonly githubPrecheck: Pick<GitHubPrecheckClient, 'precheckRepository'>;
@@ -106,6 +120,39 @@ export async function buildApp(deps: BuildAppDependencies): Promise<FastifyInsta
     registerJobsRoute(app, {
       ingestionService,
     });
+
+    if (deps.graphQueryRepository !== undefined) {
+      const defaultMaxConcurrent = deps.env.RUN_EMBEDDED_WORKER
+        ? DEFAULT_EMBEDDED_GRAPH_QUERY_CONCURRENCY
+        : DEFAULT_STANDALONE_GRAPH_QUERY_CONCURRENCY;
+      const admission =
+        deps.graphQueryAdmission ??
+        createGraphQueryAdmissionGate(deps.graphQueryMaxConcurrency ?? defaultMaxConcurrent);
+      const graphQueryService = createGraphQueryService({
+        repository: deps.graphQueryRepository,
+        admission,
+        logger: deps.logger,
+        defaultHubThreshold: deps.env.HUB_THRESHOLD,
+        maxResponseBytes: deps.graphQueryMaxResponseBytes,
+        now: nowFn,
+      });
+      registerGraphRoutes(app, {
+        graphQueryService,
+        rateLimitMax: deps.graphRateLimitMax,
+        rateLimitWindowMs: deps.graphRateLimitWindowMs,
+      });
+
+      // Immediately reject new graph reads when app.close() starts, then drain in-flight DB queries
+      // before app.close() resolves and shared PostgreSQL resources are closed.
+      app.addHook('preClose', () => {
+        admission.stop();
+        return Promise.resolve();
+      });
+      app.addHook('onClose', async () => {
+        admission.stop();
+        await admission.waitForIdle();
+      });
+    }
 
     return await app;
   } catch (err) {
